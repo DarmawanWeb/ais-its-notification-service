@@ -1,0 +1,168 @@
+import { lookup as dnsLookup, type LookupAddress } from 'node:dns';
+import { request as httpRequest, type IncomingMessage } from 'node:http';
+import { request as httpsRequest } from 'node:https';
+import type { LookupFunction } from 'node:net';
+
+import { InjectConfig } from '@darmawanweb/ais-its-nest';
+import { Injectable } from '@nestjs/common';
+
+import type { Config } from '../../../config.js';
+import {
+  signWebhookPayload,
+  WEBHOOK_DELIVERY_HEADER,
+  WEBHOOK_SIGNATURE_HEADER,
+  WEBHOOK_TIMESTAMP_HEADER,
+  webhookTimestamp,
+} from '../../../domain/webhook-signature.js';
+import { type ChannelResult, failed, parseRetryAfter } from './channel-result.js';
+import { isBlockedAddress } from './targets.js';
+
+/** A webhook host resolved to a blocked (loopback, private, …) address. */
+class BlockedTargetError extends Error {
+  override readonly name = 'BlockedTargetError';
+}
+
+/**
+ * DNS lookup that refuses blocked addresses. The connection uses exactly the
+ * checked addresses, so a DNS rebinding between check and connect is not
+ * possible.
+ */
+const guardedLookup: LookupFunction = (hostname, options, callback) => {
+  dnsLookup(hostname, { ...options, all: true }, (error, addresses: LookupAddress[]) => {
+    if (error !== null) {
+      callback(error, '', 0);
+      return;
+    }
+    if (addresses.length === 0 || addresses.some((entry) => isBlockedAddress(entry.address))) {
+      callback(
+        Object.assign(new BlockedTargetError(`${hostname} resolves to a blocked address`), {
+          code: 'EBLOCKED',
+        }),
+        '',
+        0,
+      );
+      return;
+    }
+    if (options.all === true) {
+      // Node's `all: true` form of the callback (happy eyeballs).
+      (callback as unknown as (error: null, addresses: LookupAddress[]) => void)(null, addresses);
+      return;
+    }
+    const [first] = addresses;
+    if (first !== undefined) callback(null, first.address, first.family);
+  });
+};
+
+/** Outcome of one HTTP exchange. */
+interface HttpOutcome {
+  readonly status: number;
+  readonly retryAfter: string | undefined;
+}
+
+/** Largest response body read (and discarded) from a receiver. */
+const MAX_RESPONSE_BYTES = 64 * 1024;
+
+/**
+ * Webhook channel: `POST` of a JSON body signed with
+ * `X-AIS-ITS-Signature: sha256=<hex HMAC-SHA256 of "<timestamp>.<body>">`
+ * and `X-AIS-ITS-Timestamp` (spec §13.9), plus `X-AIS-ITS-Delivery` for
+ * receiver-side deduplication. Redirects are not followed; loopback and
+ * private targets are refused unless `WEBHOOK_ALLOW_PRIVATE_TARGETS`.
+ */
+@Injectable()
+export class WebhookChannel {
+  constructor(@InjectConfig() private readonly config: Config) {}
+
+  /**
+   * Posts `body`: 2xx = `sent`; 408, 429 and 5xx (and network errors) are
+   * retried (honouring `Retry-After`); other statuses are permanent.
+   */
+  async post(url: string, body: unknown, deliveryId: string): Promise<ChannelResult> {
+    const secret = this.config.WEBHOOK_SIGNING_SECRET;
+    if (secret === undefined) {
+      return failed('Webhooks are not configured (WEBHOOK_SIGNING_SECRET)', true);
+    }
+    let target: URL;
+    try {
+      target = new URL(url);
+    } catch {
+      return failed('Invalid webhook URL', true);
+    }
+    const allowPrivate = this.config.WEBHOOK_ALLOW_PRIVATE_TARGETS;
+    if (!allowPrivate && isBlockedHostLiteral(target.hostname)) {
+      return failed('Webhook target is a loopback or private address', true);
+    }
+    const raw = JSON.stringify(body);
+    const timestamp = webhookTimestamp(new Date());
+    try {
+      const outcome = await this.exchange(target, raw, {
+        'content-type': 'application/json',
+        'user-agent': `ais-its-notification/${this.config.SERVICE_VERSION}`,
+        [WEBHOOK_SIGNATURE_HEADER]: signWebhookPayload(secret, timestamp, raw),
+        [WEBHOOK_TIMESTAMP_HEADER]: timestamp,
+        [WEBHOOK_DELIVERY_HEADER]: deliveryId,
+      }, allowPrivate);
+      if (outcome.status >= 200 && outcome.status < 300) return { outcome: 'sent' };
+      const transient =
+        outcome.status === 408 || outcome.status === 429 || outcome.status >= 500;
+      return failed(
+        `Webhook answered HTTP ${outcome.status}`,
+        !transient,
+        transient ? parseRetryAfter(outcome.retryAfter, new Date()) : undefined,
+      );
+    } catch (error) {
+      if (error instanceof BlockedTargetError) return failed(error.message, true);
+      const code = error instanceof Error && 'code' in error ? String(error.code) : undefined;
+      return failed(
+        `Webhook unreachable: ${code ?? (error instanceof Error ? error.message : 'unknown error')}`,
+        false,
+      );
+    }
+  }
+
+  private exchange(
+    target: URL,
+    raw: string,
+    headers: Record<string, string>,
+    allowPrivate: boolean,
+  ): Promise<HttpOutcome> {
+    const send = target.protocol === 'https:' ? httpsRequest : httpRequest;
+    return new Promise<HttpOutcome>((resolve, reject) => {
+      const request = send(
+        target,
+        {
+          method: 'POST',
+          headers: { ...headers, 'content-length': String(Buffer.byteLength(raw)) },
+          timeout: this.config.WEBHOOK_TIMEOUT_MS,
+          ...(allowPrivate ? {} : { lookup: guardedLookup }),
+        },
+        (response: IncomingMessage) => {
+          let received = 0;
+          response.on('data', (chunk: Buffer) => {
+            received += chunk.length;
+            if (received > MAX_RESPONSE_BYTES) response.destroy();
+          });
+          const settle = (): void => {
+            const retryAfter = response.headers['retry-after'];
+            resolve({ status: response.statusCode ?? 0, retryAfter });
+          };
+          response.on('end', settle);
+          response.on('close', settle);
+          response.on('error', settle);
+        },
+      );
+      request.on('timeout', () => {
+        request.destroy(Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }));
+      });
+      request.on('error', reject);
+      request.end(raw);
+    });
+  }
+}
+
+/** A URL host that is a blocked IP literal or `localhost`. */
+function isBlockedHostLiteral(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  return /^[\d.]+$/.test(host) || host.includes(':') ? isBlockedAddress(host) : false;
+}
