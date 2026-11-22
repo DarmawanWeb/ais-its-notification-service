@@ -8,6 +8,8 @@ import * as schema from './schema.js';
  * `withTransaction()` / `withIdempotency()` so repositories run their typed
  * queries inside that transaction.
  */
-export function transactionDatabase(client: PoolClient): Database<typeof schema> {
+export function transactionDatabase(
+  client: PoolClient,
+): Database<typeof schema> {
   return drizzle({ client, schema });
 }

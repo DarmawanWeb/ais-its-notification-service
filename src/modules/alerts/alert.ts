@@ -55,8 +55,11 @@ export type AlertScope =
 
 /** The alert scope of a principal. */
 export function alertScopeOf(principal: Principal): AlertScope {
-  if (principal.kind === 'user' && principal.hasAuthorityAccess) return { kind: 'all' };
-  return principal.orgId === null ? { kind: 'none' } : { kind: 'org', orgId: principal.orgId };
+  if (principal.kind === 'user' && principal.hasAuthorityAccess)
+    return { kind: 'all' };
+  return principal.orgId === null
+    ? { kind: 'none' }
+    : { kind: 'org', orgId: principal.orgId };
 }
 
 /** Filters of `GET /alerts`. */
@@ -151,6 +154,7 @@ export function toRealtimeAlert(alert: InboxAlert): RealtimeAlert {
  */
 export function alertRooms(ownerOrgIds: Iterable<string | null>): string[] {
   const rooms = new Set<string>([AUTHORITY_ROOM]);
-  for (const orgId of ownerOrgIds) if (orgId !== null) rooms.add(orgRoom(orgId));
+  for (const orgId of ownerOrgIds)
+    if (orgId !== null) rooms.add(orgRoom(orgId));
   return [...rooms];
 }

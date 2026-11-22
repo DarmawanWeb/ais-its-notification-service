@@ -5,7 +5,10 @@ import {
   NOTIFICATION_CHANNELS,
   type NotificationChannel,
 } from '@darmawanweb/ais-its-contracts/domain';
-import { CursorPageInfoDto, CursorQueryDto } from '@darmawanweb/ais-its-nest/http';
+import {
+  CursorPageInfoDto,
+  CursorQueryDto,
+} from '@darmawanweb/ais-its-nest/http';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsIn, IsOptional, IsUUID } from 'class-validator';
 
@@ -13,7 +16,13 @@ import type { DeliveryStatus } from '../../../db/schema.js';
 import type { Delivery } from '../delivery.js';
 
 /** Delivery states. */
-export const DELIVERY_STATUSES = ['pending', 'sending', 'queued', 'sent', 'failed'] as const satisfies readonly DeliveryStatus[];
+export const DELIVERY_STATUSES = [
+  'pending',
+  'sending',
+  'queued',
+  'sent',
+  'failed',
+] as const satisfies readonly DeliveryStatus[];
 
 /** A delivery on the wire. */
 export class DeliveryDto {
@@ -32,7 +41,10 @@ export class DeliveryDto {
   @ApiProperty()
   readonly target: string;
 
-  @ApiProperty({ enum: ALERT_SEVERITIES, description: 'Alert severity when the delivery was planned' })
+  @ApiProperty({
+    enum: ALERT_SEVERITIES,
+    description: 'Alert severity when the delivery was planned',
+  })
   readonly severity: AlertSeverity;
 
   @ApiProperty({
@@ -48,7 +60,10 @@ export class DeliveryDto {
   @ApiProperty({ type: String, nullable: true, description: 'Last error' })
   readonly error: string | null;
 
-  @ApiProperty({ format: 'date-time', description: 'Next attempt (pending deliveries)' })
+  @ApiProperty({
+    format: 'date-time',
+    description: 'Next attempt (pending deliveries)',
+  })
   readonly nextAttemptAt: string;
 
   @ApiProperty({ type: String, format: 'date-time', nullable: true })

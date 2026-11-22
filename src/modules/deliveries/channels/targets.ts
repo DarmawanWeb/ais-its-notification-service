@@ -46,7 +46,10 @@ for (const [network, prefix] of [
  * blocked.
  */
 export function isBlockedAddress(address: string): boolean {
-  const bare = address.startsWith('[') && address.endsWith(']') ? address.slice(1, -1) : address;
+  const bare =
+    address.startsWith('[') && address.endsWith(']')
+      ? address.slice(1, -1)
+      : address;
   const family = isIP(bare);
   if (family === 4) return BLOCKED.check(bare, 'ipv4');
   if (family === 6) {
@@ -58,7 +61,8 @@ export function isBlockedAddress(address: string): boolean {
 }
 
 /** Telegram chat ids: numeric ids (groups are negative) or `@channelusername`. */
-export const TELEGRAM_CHAT_PATTERN = /^(?:-?\d{1,20}|@[A-Za-z][A-Za-z0-9_]{4,31})$/;
+export const TELEGRAM_CHAT_PATTERN =
+  /^(?:-?\d{1,20}|@[A-Za-z][A-Za-z0-9_]{4,31})$/;
 
 /** Longest accepted target. */
 export const MAX_TARGET_LENGTH = 2_048;
@@ -89,7 +93,9 @@ export function channelTargetIssue(
   }
   switch (type) {
     case 'email':
-      return EmailSchema.safeParse(target).success ? null : 'target must be an e-mail address';
+      return EmailSchema.safeParse(target).success
+        ? null
+        : 'target must be an e-mail address';
     case 'telegram':
       return TELEGRAM_CHAT_PATTERN.test(target)
         ? null

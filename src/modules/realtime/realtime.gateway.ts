@@ -12,8 +12,15 @@ import {
   VesselSubscribeRequestSchema,
   vesselRoom,
 } from '@darmawanweb/ais-its-contracts/realtime';
-import { InjectConfig, ServiceUnavailableError } from '@darmawanweb/ais-its-nest';
-import { AccessTokenVerifier, Public, type UserPrincipal } from '@darmawanweb/ais-its-nest/auth';
+import {
+  InjectConfig,
+  ServiceUnavailableError,
+} from '@darmawanweb/ais-its-nest';
+import {
+  AccessTokenVerifier,
+  Public,
+  type UserPrincipal,
+} from '@darmawanweb/ais-its-nest/auth';
 import { Logger } from '@nestjs/common';
 import {
   ConnectedSocket,
@@ -66,7 +73,9 @@ function invalid(message: string): RealtimeAck<never> {
 }
 
 function issues(error: z.ZodError): string {
-  return error.issues.map((issue) => `${issue.path.join('.') || '(body)'}: ${issue.message}`).join('; ');
+  return error.issues
+    .map((issue) => `${issue.path.join('.') || '(body)'}: ${issue.message}`)
+    .join('; ');
 }
 
 /**
@@ -82,7 +91,10 @@ function issues(error: z.ZodError): string {
 @Public()
 @WebSocketGateway({ path: REALTIME_PATH, serveClient: false })
 export class RealtimeGateway
-  implements OnGatewayInit<RealtimeServer>, OnGatewayConnection<RealtimeSocket>, OnGatewayDisconnect<RealtimeSocket>
+  implements
+    OnGatewayInit<RealtimeServer>,
+    OnGatewayConnection<RealtimeSocket>,
+    OnGatewayDisconnect<RealtimeSocket>
 {
   private readonly logger = new Logger(RealtimeGateway.name);
 
@@ -106,7 +118,8 @@ export class RealtimeGateway
               ? error
               : new HandshakeError('UNAUTHORIZED', 'Authentication failed');
           this.metrics.wsHandshakes.inc({
-            outcome: refusal.data.code === 'UNAUTHORIZED' ? 'rejected' : 'unavailable',
+            outcome:
+              refusal.data.code === 'UNAUTHORIZED' ? 'rejected' : 'unavailable',
           });
           next(refusal);
         },
@@ -122,11 +135,15 @@ export class RealtimeGateway
     void socket.join(rooms);
     this.metrics.wsHandshakes.inc({ outcome: 'accepted' });
     this.metrics.wsConnections.inc();
-    this.logger.debug({ socketId: socket.id, principal: principal.id }, 'Realtime client connected');
+    this.logger.debug(
+      { socketId: socket.id, principal: principal.id },
+      'Realtime client connected',
+    );
   }
 
   handleDisconnect(socket: RealtimeSocket): void {
-    if (socket.data.expiryTimer !== undefined) clearTimeout(socket.data.expiryTimer);
+    if (socket.data.expiryTimer !== undefined)
+      clearTimeout(socket.data.expiryTimer);
     this.metrics.wsConnections.dec();
   }
 
@@ -197,15 +214,22 @@ export class RealtimeGateway
   /** Verifies the handshake token and prepares `socket.data`. */
   private async authenticate(socket: RealtimeSocket): Promise<void> {
     const auth = RealtimeHandshakeAuthSchema.safeParse(socket.handshake.auth);
-    if (!auth.success) throw new HandshakeError('UNAUTHORIZED', 'An access token is required');
+    if (!auth.success)
+      throw new HandshakeError('UNAUTHORIZED', 'An access token is required');
     let principal: UserPrincipal;
     try {
       principal = await this.verifier.verify(auth.data.token);
     } catch (error) {
       if (error instanceof ServiceUnavailableError) {
-        throw new HandshakeError('SERVICE_UNAVAILABLE', 'Signing keys are unavailable, retry later');
+        throw new HandshakeError(
+          'SERVICE_UNAVAILABLE',
+          'Signing keys are unavailable, retry later',
+        );
       }
-      throw new HandshakeError('UNAUTHORIZED', 'Invalid or expired access token');
+      throw new HandshakeError(
+        'UNAUTHORIZED',
+        'Invalid or expired access token',
+      );
     }
     socket.data = {
       principal,
@@ -219,16 +243,28 @@ export class RealtimeGateway
    * Closes the transport when the token expires: socket.io clients then
    * reconnect on their own and present a fresh token (spec §9).
    */
-  private reauthTimer(socket: RealtimeSocket, token: string): NodeJS.Timeout | undefined {
+  private reauthTimer(
+    socket: RealtimeSocket,
+    token: string,
+  ): NodeJS.Timeout | undefined {
     if (!this.config.REALTIME_REAUTH_ON_TOKEN_EXPIRY) return undefined;
     const expiry = tokenExpiry(token);
     if (expiry === null) return undefined;
     // setTimeout holds at most 2^31 − 1 ms; access tokens live 15 minutes.
-    const delay = Math.min(expiry.getTime() + EXPIRY_TOLERANCE_MS - Date.now(), 2_147_483_647);
-    const timer = setTimeout(() => {
-      this.logger.debug({ socketId: socket.id }, 'Access token expired: closing the transport');
-      socket.conn.close();
-    }, Math.max(0, delay));
+    const delay = Math.min(
+      expiry.getTime() + EXPIRY_TOLERANCE_MS - Date.now(),
+      2_147_483_647,
+    );
+    const timer = setTimeout(
+      () => {
+        this.logger.debug(
+          { socketId: socket.id },
+          'Access token expired: closing the transport',
+        );
+        socket.conn.close();
+      },
+      Math.max(0, delay),
+    );
     timer.unref();
     return timer;
   }

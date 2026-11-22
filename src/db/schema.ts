@@ -108,7 +108,8 @@ export const alertRules = serviceSchema.table(
 );
 
 /** Delivery states (`deliveries.status`). */
-export type DeliveryStatus = 'pending' | 'sending' | 'queued' | 'sent' | 'failed';
+export type DeliveryStatus =
+  'pending' | 'sending' | 'queued' | 'sent' | 'failed';
 
 /** Notifications of alerts through the channels of rules (`0001_init.sql`). */
 export const deliveries = serviceSchema.table(

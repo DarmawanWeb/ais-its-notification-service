@@ -10,6 +10,7 @@ import { IsIn, IsOptional, IsString, Length } from 'class-validator';
 
 import { trimString } from '../../rules/dto/write-alert-rule.dto.js';
 import { MAX_TARGET_LENGTH } from '../channels/targets.js';
+import type { TestNotificationResult } from '../notifications.service.js';
 
 /** `POST /notifications/test`. */
 export class TestNotificationDto {
@@ -43,14 +44,15 @@ export class TestNotificationResultDto {
 
   @ApiProperty({
     enum: ['sent', 'queued', 'failed'],
-    description: 'queued: the e-mail was handed to the e-mail pipeline (check the inbox)',
+    description:
+      'queued: the e-mail was handed to the e-mail pipeline (check the inbox)',
   })
   readonly status: 'sent' | 'queued' | 'failed';
 
   @ApiProperty({ type: String, nullable: true })
   readonly error: string | null;
 
-  constructor(result: TestNotificationResultDto) {
+  constructor(result: TestNotificationResult) {
     this.channel = result.channel;
     this.target = result.target;
     this.status = result.status;

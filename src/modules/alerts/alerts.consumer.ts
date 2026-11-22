@@ -1,4 +1,7 @@
-import { type ConsumerEnvelope, EventHandler } from '@darmawanweb/ais-its-nest/nats';
+import {
+  type ConsumerEnvelope,
+  EventHandler,
+} from '@darmawanweb/ais-its-nest/nats';
 import { Injectable } from '@nestjs/common';
 
 import { AlertIngestService } from './alert-ingest.service.js';
@@ -14,7 +17,13 @@ export class AlertsConsumer {
   constructor(private readonly ingest: AlertIngestService) {}
 
   @EventHandler({ consumer: 'notification-alerts', concurrency: 4 })
-  async onAlertRaised(event: ConsumerEnvelope<'notification-alerts'>): Promise<void> {
-    await this.ingest.ingest({ id: event.id, source: event.source, data: event.data });
+  async onAlertRaised(
+    event: ConsumerEnvelope<'notification-alerts'>,
+  ): Promise<void> {
+    await this.ingest.ingest({
+      id: event.id,
+      source: event.source,
+      data: event.data,
+    });
   }
 }

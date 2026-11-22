@@ -12,7 +12,10 @@ const HTML_ESCAPES: Readonly<Record<string, string>> = {
  * (OWASP XSS prevention rule 1/2: `& < > " ' \``).
  */
 export function escapeHtml(value: string): string {
-  return value.replace(/[&<>"'`]/g, (character) => HTML_ESCAPES[character] ?? character);
+  return value.replace(
+    /[&<>"'`]/g,
+    (character) => HTML_ESCAPES[character] ?? character,
+  );
 }
 
 /** Markup that is already safe: produced by {@link html}, never from input. */
@@ -26,17 +29,13 @@ export class SafeHtml {
 
 /** A value interpolated into {@link html}. */
 export type HtmlValue =
-  | SafeHtml
-  | string
-  | number
-  | null
-  | undefined
-  | readonly HtmlValue[];
+  SafeHtml | string | number | null | undefined | readonly HtmlValue[];
 
 function render(value: HtmlValue): string {
   if (value === null || value === undefined) return '';
   if (value instanceof SafeHtml) return value.value;
-  if (Array.isArray(value)) return value.map((item: HtmlValue) => render(item)).join('');
+  if (Array.isArray(value))
+    return value.map((item: HtmlValue) => render(item)).join('');
   return escapeHtml(String(value));
 }
 
@@ -47,7 +46,10 @@ function render(value: HtmlValue): string {
  *
  * @example html`<p>Hello ${name}</p>` // name "<b>x</b>" → "<p>Hello &lt;b&gt;x&lt;/b&gt;</p>"
  */
-export function html(strings: TemplateStringsArray, ...values: readonly HtmlValue[]): SafeHtml {
+export function html(
+  strings: TemplateStringsArray,
+  ...values: readonly HtmlValue[]
+): SafeHtml {
   let out = strings[0] ?? '';
   values.forEach((value, index) => {
     out += render(value) + (strings[index + 1] ?? '');

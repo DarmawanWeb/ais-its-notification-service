@@ -88,10 +88,14 @@ export class RealtimeHub
     if (update === null) return;
     const room = vesselRoom(update.position.mmsi);
     if (this.server !== undefined && this.hasMembers(room)) {
-      this.server.to(room).emit(REALTIME_SERVER_EVENTS.VESSEL_POSITION, update.position);
+      this.server
+        .to(room)
+        .emit(REALTIME_SERVER_EVENTS.VESSEL_POSITION, update.position);
       this.count(REALTIME_SERVER_EVENTS.VESSEL_POSITION);
       if (update.safety !== null && update.safetyWasPending) {
-        this.server.to(room).emit(REALTIME_SERVER_EVENTS.VESSEL_SAFETY, update.safety);
+        this.server
+          .to(room)
+          .emit(REALTIME_SERVER_EVENTS.VESSEL_SAFETY, update.safety);
         this.count(REALTIME_SERVER_EVENTS.VESSEL_SAFETY);
       }
     }
@@ -104,13 +108,16 @@ export class RealtimeHub
   /** A vessel safety state (`SAFETY`). */
   onSafetyState(event: SafetyVesselStateV1): void {
     const update = this.vessels.applySafety(event);
-    if (update === null || update.state === null || update.room === null) return;
+    // Ignored (older than the known state) or waiting for a first position.
+    if (update === null) return;
+    const { state, room: tileRoom } = update;
+    if (state === null || tileRoom === null) return;
     const room = vesselRoom(event.mmsi);
     if (this.server !== undefined && this.hasMembers(room)) {
-      this.server.to(room).emit(REALTIME_SERVER_EVENTS.VESSEL_SAFETY, update.state);
+      this.server.to(room).emit(REALTIME_SERVER_EVENTS.VESSEL_SAFETY, state);
       this.count(REALTIME_SERVER_EVENTS.VESSEL_SAFETY);
     }
-    this.batcher.addSafetyState(update.room, update.state);
+    this.batcher.addSafetyState(tileRoom, state);
   }
 
   /** A CII update (`EMISSION`) for the organization owning the vessel. */
@@ -122,7 +129,11 @@ export class RealtimeHub
   }
 
   /** Emits an alert to the rooms of this instance (see `AlertBroadcaster`). */
-  emitAlert(event: AlertEvent, alert: RealtimeAlert, rooms: readonly string[]): void {
+  emitAlert(
+    event: AlertEvent,
+    alert: RealtimeAlert,
+    rooms: readonly string[],
+  ): void {
     const active = rooms.filter((room) => this.hasMembers(room));
     if (this.server === undefined || active.length === 0) return;
     // One emit to several rooms reaches a socket that is in several rooms once.

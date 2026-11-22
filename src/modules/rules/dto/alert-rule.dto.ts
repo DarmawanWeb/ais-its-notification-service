@@ -48,32 +48,56 @@ export class AlertRuleDto {
 
   @ApiProperty({
     enum: ['org', 'all'],
-    description: 'org: vessels of the organization; all: every vessel (authority rules)',
+    description:
+      'org: vessels of the organization; all: every vessel (authority rules)',
   })
   readonly scope: RuleScope;
 
-  @ApiProperty({ type: [String], example: ['ews'], description: 'Empty = every type' })
+  @ApiProperty({
+    type: [String],
+    example: ['ews'],
+    description: 'Empty = every type',
+  })
   readonly types: string[];
 
-  @ApiProperty({ enum: ALERT_DOMAINS, isArray: true, description: 'Empty = every domain' })
+  @ApiProperty({
+    enum: ALERT_DOMAINS,
+    isArray: true,
+    description: 'Empty = every domain',
+  })
   readonly domains: AlertDomain[];
 
   @ApiProperty({ enum: ALERT_SEVERITIES })
   readonly minSeverity: AlertSeverity;
 
-  @ApiProperty({ type: [Number], example: [525005223], description: 'Empty = every vessel' })
+  @ApiProperty({
+    type: [Number],
+    example: [525005223],
+    description: 'Empty = every vessel',
+  })
   readonly mmsi: number[];
 
-  @ApiProperty({ type: [String], format: 'uuid', description: 'Empty = every zone' })
+  @ApiProperty({
+    type: [String],
+    format: 'uuid',
+    description: 'Empty = every zone',
+  })
   readonly zoneIds: string[];
 
   @ApiProperty({ type: [RuleChannelViewDto] })
   readonly channels: RuleChannelViewDto[];
 
-  @ApiProperty({ enum: LOCALES, description: 'Language of the notification texts' })
+  @ApiProperty({
+    enum: LOCALES,
+    description: 'Language of the notification texts',
+  })
   readonly locale: Locale;
 
-  @ApiProperty({ minimum: 0, maximum: 10_080, description: 'Quiet period, minutes' })
+  @ApiProperty({
+    minimum: 0,
+    maximum: 10_080,
+    description: 'Quiet period, minutes',
+  })
   readonly quietMinutes: number;
 
   @ApiProperty()
@@ -96,7 +120,9 @@ export class AlertRuleDto {
     this.minSeverity = rule.minSeverity;
     this.mmsi = [...rule.mmsi];
     this.zoneIds = [...rule.zoneIds];
-    this.channels = rule.channels.map((channel) => new RuleChannelViewDto(channel));
+    this.channels = rule.channels.map(
+      (channel) => new RuleChannelViewDto(channel),
+    );
     this.locale = rule.locale;
     this.quietMinutes = rule.quietMinutes;
     this.enabled = rule.enabled;

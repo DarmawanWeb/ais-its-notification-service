@@ -3,7 +3,11 @@ import { Injectable } from '@nestjs/common';
 import * as z from 'zod';
 
 import type { Config } from '../../../config.js';
-import { type ChannelResult, failed, parseRetryAfter } from './channel-result.js';
+import {
+  type ChannelResult,
+  failed,
+  parseRetryAfter,
+} from './channel-result.js';
 
 /** The part of a Bot API response the channel reads. */
 const TelegramResponseSchema = z.object({
@@ -16,7 +20,12 @@ const TelegramResponseSchema = z.object({
 function networkError(error: unknown): string {
   if (error instanceof Error && error.name === 'TimeoutError') return 'timeout';
   const cause: unknown = error instanceof Error ? error.cause : undefined;
-  if (cause instanceof Error && 'code' in cause && typeof cause.code === 'string') return cause.code;
+  if (
+    cause instanceof Error &&
+    'code' in cause &&
+    typeof cause.code === 'string'
+  )
+    return cause.code;
   return error instanceof Error ? error.name : 'unknown error';
 }
 
@@ -63,14 +72,16 @@ export class TelegramChannel {
     const parsed = TelegramResponseSchema.safeParse(
       await response.json().catch(() => undefined),
     );
-    const description = (parsed.success ? parsed.data.description : undefined)?.replaceAll(
-      token,
-      '***',
-    );
-    if (response.ok && parsed.success && parsed.data.ok) return { outcome: 'sent' };
+    const description = (
+      parsed.success ? parsed.data.description : undefined
+    )?.replaceAll(token, '***');
+    if (response.ok && parsed.success && parsed.data.ok)
+      return { outcome: 'sent' };
     const detail = `${response.status}${description === undefined ? '' : `: ${description}`}`;
     if (response.status === 429) {
-      const retryAfter = parsed.success ? parsed.data.parameters?.retry_after : undefined;
+      const retryAfter = parsed.success
+        ? parsed.data.parameters?.retry_after
+        : undefined;
       return failed(
         `Telegram rate limit (${detail})`,
         false,
@@ -79,7 +90,8 @@ export class TelegramChannel {
           : retryAfter * 1000,
       );
     }
-    if (response.status >= 500) return failed(`Telegram API error (${detail})`, false);
+    if (response.status >= 500)
+      return failed(`Telegram API error (${detail})`, false);
     return failed(`Telegram refused the message (${detail})`, true);
   }
 }

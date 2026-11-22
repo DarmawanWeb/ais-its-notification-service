@@ -1,4 +1,8 @@
-import { CurrentPrincipal, type Principal, RequirePermissions } from '@darmawanweb/ais-its-nest/auth';
+import {
+  CurrentPrincipal,
+  type Principal,
+  RequirePermissions,
+} from '@darmawanweb/ais-its-nest/auth';
 import {
   Body,
   Controller,
@@ -25,7 +29,10 @@ import type { FastifyRequest } from 'fastify';
 import { AlertRulesService } from './alert-rules.service.js';
 import { AlertRuleDto, AlertRulePageDto } from './dto/alert-rule.dto.js';
 import { ListAlertRulesQuery } from './dto/list-alert-rules.query.js';
-import { CreateAlertRuleDto, UpdateAlertRuleDto } from './dto/write-alert-rule.dto.js';
+import {
+  CreateAlertRuleDto,
+  UpdateAlertRuleDto,
+} from './dto/write-alert-rule.dto.js';
 
 /**
  * Alert rules of an organization (`/api/v2/alert-rules`, spec §13.9), all
@@ -49,7 +56,9 @@ export class AlertRulesController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'List the alert rules of the organization, newest first' })
+  @ApiOperation({
+    summary: 'List the alert rules of the organization, newest first',
+  })
   @ApiOkResponse({ type: AlertRulePageDto })
   async list(
     @Query() query: ListAlertRulesQuery,
@@ -80,7 +89,9 @@ export class AlertRulesController {
     @CurrentPrincipal() principal: Principal,
     @Req() request: FastifyRequest,
   ): Promise<AlertRuleDto> {
-    return new AlertRuleDto(await this.rules.update(id, body, principal, request));
+    return new AlertRuleDto(
+      await this.rules.update(id, body, principal, request),
+    );
   }
 
   @Delete(':id')

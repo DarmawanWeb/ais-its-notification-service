@@ -17,7 +17,12 @@ const SIGNATURE_PREFIX = 'sha256=';
  * prefixed with `sha256=`. Signing the timestamp lets receivers reject
  * replayed requests (see {@link verifyWebhookSignature}).
  *
+ * Proposed method id (not yet in docs/references/methods.json).
+ *
+ * @method notify.webhook_signature
+ * @see ../../../../docs/PLATFORM_SPEC.md §13.9 — `X-AIS-ITS-Signature: sha256=<hmac>`
  * @see https://www.rfc-editor.org/rfc/rfc2104 — HMAC
+ * @see https://csrc.nist.gov/pubs/fips/180-4/upd1/final — SHA-256 (FIPS 180-4)
  * @param secret - the shared signing secret
  * @param timestamp - `X-AIS-ITS-Timestamp`, Unix seconds as sent
  * @param rawBody - the exact request body bytes
@@ -65,7 +70,9 @@ export function verifyWebhookSignature(
   if (Math.abs(nowSeconds - Number(timestamp)) > toleranceSeconds) return false;
   const expected = Buffer.from(signWebhookPayload(secret, timestamp, rawBody));
   const received = Buffer.from(signature);
-  return expected.length === received.length && timingSafeEqual(expected, received);
+  return (
+    expected.length === received.length && timingSafeEqual(expected, received)
+  );
 }
 
 /** `X-AIS-ITS-Timestamp` of a signing time: Unix seconds. */

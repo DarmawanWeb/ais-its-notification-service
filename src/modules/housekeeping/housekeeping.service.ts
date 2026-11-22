@@ -1,5 +1,9 @@
 import { InjectConfig } from '@darmawanweb/ais-its-nest';
-import { InjectPool, type Pool, pruneProcessedEvents } from '@darmawanweb/ais-its-nest/db';
+import {
+  InjectPool,
+  type Pool,
+  pruneProcessedEvents,
+} from '@darmawanweb/ais-its-nest/db';
 import {
   type BeforeApplicationShutdown,
   Injectable,
@@ -24,7 +28,9 @@ const DAY_MS = 86_400_000;
  * are idempotent).
  */
 @Injectable()
-export class HousekeepingService implements OnApplicationBootstrap, BeforeApplicationShutdown {
+export class HousekeepingService
+  implements OnApplicationBootstrap, BeforeApplicationShutdown
+{
   private readonly logger = new Logger(HousekeepingService.name);
   private timer: NodeJS.Timeout | undefined;
   private running: Promise<void> | undefined;
@@ -53,7 +59,9 @@ export class HousekeepingService implements OnApplicationBootstrap, BeforeApplic
   /** One retention pass (errors are logged, the next pass retries). */
   async prune(now: Date = new Date()): Promise<void> {
     try {
-      const idsBefore = new Date(now.getTime() - this.config.IDEMPOTENCY_RETENTION_DAYS * DAY_MS);
+      const idsBefore = new Date(
+        now.getTime() - this.config.IDEMPOTENCY_RETENTION_DAYS * DAY_MS,
+      );
       const logBefore = new Date(
         now.getTime() - this.config.NOTIFICATION_LOG_RETENTION_DAYS * DAY_MS,
       );
@@ -61,7 +69,10 @@ export class HousekeepingService implements OnApplicationBootstrap, BeforeApplic
       const deliveries = await this.deliveries.pruneFinished(logBefore);
       const emails = await this.emails.prune(logBefore);
       if (events + deliveries + emails > 0) {
-        this.logger.log({ events, deliveries, emails }, 'Pruned bookkeeping rows');
+        this.logger.log(
+          { events, deliveries, emails },
+          'Pruned bookkeeping rows',
+        );
       }
     } catch (error) {
       this.logger.error({ err: error }, 'Retention pass failed');

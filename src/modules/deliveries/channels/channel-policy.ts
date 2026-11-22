@@ -1,5 +1,9 @@
 import type { NotificationChannel } from '@darmawanweb/ais-its-contracts/domain';
-import { DomainError, InjectConfig, ValidationFailedError } from '@darmawanweb/ais-its-nest';
+import {
+  DomainError,
+  InjectConfig,
+  ValidationFailedError,
+} from '@darmawanweb/ais-its-nest';
 import { Injectable } from '@nestjs/common';
 
 import type { Config } from '../../../config.js';
@@ -49,11 +53,20 @@ export class ChannelPolicy {
       });
       return issue === null
         ? []
-        : [{ field: field === '' ? 'target' : `${field}.${index}.target`, message: issue }];
+        : [
+            {
+              field: field === '' ? 'target' : `${field}.${index}.target`,
+              message: issue,
+            },
+          ];
     });
     if (errors.length > 0) throw new ValidationFailedError(errors);
     const missing = [
-      ...new Set(channels.map((channel) => channel.type).filter((type) => !this.isConfigured(type))),
+      ...new Set(
+        channels
+          .map((channel) => channel.type)
+          .filter((type) => !this.isConfigured(type)),
+      ),
     ];
     if (missing.length > 0) throw new ChannelNotConfiguredError(missing);
   }

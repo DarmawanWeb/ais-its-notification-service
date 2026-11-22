@@ -22,7 +22,10 @@ export class RealtimeIoAdapter extends IoAdapter {
     super(app);
   }
 
-  override createIOServer(port: number | undefined, options?: ServerOptions): Server {
+  override createIOServer(
+    port: number | undefined,
+    options?: ServerOptions,
+  ): Server {
     const settings: Partial<ServerOptions> = {
       ...options,
       path: REALTIME_PATH,

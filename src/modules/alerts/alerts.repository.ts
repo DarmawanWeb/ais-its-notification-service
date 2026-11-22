@@ -20,7 +20,10 @@ import {
 } from 'drizzle-orm';
 
 import * as schema from '../../db/schema.js';
-import type { AlertLifecycle, MergeableAlert } from '../../domain/alert-inbox.js';
+import type {
+  AlertLifecycle,
+  MergeableAlert,
+} from '../../domain/alert-inbox.js';
 import type {
   AlertCursor,
   AlertFilter,
@@ -62,23 +65,16 @@ export class AlertsRepository {
   }
 
   /** Inserts a new alert; `undefined` when an alert with its id and time exists. */
-  async insert(executor: Executor, alert: NewInboxAlert): Promise<InboxAlert | undefined> {
+  async insert(
+    executor: Executor,
+    alert: NewInboxAlert,
+  ): Promise<InboxAlert | undefined> {
     const [row] = await executor
       .insert(alerts)
       .values({ ...alert })
       .onConflictDoNothing()
       .returning();
     return row;
-  }
-
-  /** `true` when an alert with this id is stored (any time). */
-  async exists(executor: Executor, id: string): Promise<boolean> {
-    const [row] = await executor
-      .select({ id: alerts.id })
-      .from(alerts)
-      .where(eq(alerts.id, id))
-      .limit(1);
-    return row !== undefined;
   }
 
   /** Writes a merged occurrence into the stored alert. */
@@ -108,14 +104,20 @@ export class AlertsRepository {
         ...(orgId === null ? {} : { orgId }),
         updatedAt: sql`now()`,
       })
-      .where(and(eq(alerts.id, stored.id), eq(alerts.occurredAt, stored.occurredAt)))
+      .where(
+        and(eq(alerts.id, stored.id), eq(alerts.occurredAt, stored.occurredAt)),
+      )
       .returning();
-    if (row === undefined) throw new Error(`Alert ${stored.id} vanished during a merge`);
+    if (row === undefined)
+      throw new Error(`Alert ${stored.id} vanished during a merge`);
     return row;
   }
 
   /** An alert visible in `scope`. */
-  async findById(id: string, scope: AlertScope): Promise<InboxAlert | undefined> {
+  async findById(
+    id: string,
+    scope: AlertScope,
+  ): Promise<InboxAlert | undefined> {
     const [row] = await this.db
       .select()
       .from(alerts)
@@ -159,14 +161,12 @@ export class AlertsRepository {
       .from(alerts)
       .where(and(eq(alerts.status, 'open'), this.scopeCondition(scope)))
       .groupBy(alerts.severity, alerts.domain, alerts.type);
-    const bySeverity = Object.fromEntries(ALERT_SEVERITIES.map((s) => [s, 0])) as Record<
-      (typeof ALERT_SEVERITIES)[number],
-      number
-    >;
-    const byDomain = Object.fromEntries(ALERT_DOMAINS.map((d) => [d, 0])) as Record<
-      (typeof ALERT_DOMAINS)[number],
-      number
-    >;
+    const bySeverity = Object.fromEntries(
+      ALERT_SEVERITIES.map((s) => [s, 0]),
+    ) as Record<(typeof ALERT_SEVERITIES)[number], number>;
+    const byDomain = Object.fromEntries(
+      ALERT_DOMAINS.map((d) => [d, 0]),
+    ) as Record<(typeof ALERT_DOMAINS)[number], number>;
     const byType: Record<string, number> = Object.fromEntries(
       KNOWN_ALERT_TYPES.map((type) => [type, 0]),
     );
@@ -223,7 +223,10 @@ export class AlertsRepository {
           .select({ mmsi: vessels.mmsi })
           .from(vessels)
           .where(eq(vessels.orgId, scope.orgId));
-        return or(inArray(alerts.mmsi, owned), inArray(alerts.relatedMmsi, owned));
+        return or(
+          inArray(alerts.mmsi, owned),
+          inArray(alerts.relatedMmsi, owned),
+        );
       }
     }
   }
@@ -234,7 +237,9 @@ function filterConditions(filter: AlertFilter): (SQL | undefined)[] {
     filter.status === undefined ? undefined : eq(alerts.status, filter.status),
     filter.type === undefined ? undefined : eq(alerts.type, filter.type),
     filter.domain === undefined ? undefined : eq(alerts.domain, filter.domain),
-    filter.severity === undefined ? undefined : eq(alerts.severity, filter.severity),
+    filter.severity === undefined
+      ? undefined
+      : eq(alerts.severity, filter.severity),
     filter.mmsi === undefined
       ? undefined
       : or(eq(alerts.mmsi, filter.mmsi), eq(alerts.relatedMmsi, filter.mmsi)),

@@ -5,14 +5,21 @@ import {
 } from '@darmawanweb/ais-its-contracts/api';
 import { newId } from '@darmawanweb/ais-its-contracts/domain';
 import { DomainError, ForbiddenError } from '@darmawanweb/ais-its-nest';
-import { type AuditRequest, AuditService } from '@darmawanweb/ais-its-nest/audit';
-import { assertOrgAccess, type Principal } from '@darmawanweb/ais-its-nest/auth';
+import {
+  type AuditRequest,
+  AuditService,
+} from '@darmawanweb/ais-its-nest/audit';
+import {
+  assertOrgAccess,
+  type Principal,
+} from '@darmawanweb/ais-its-nest/auth';
 import { Injectable } from '@nestjs/common';
 
 import type { RuleScope } from '../../domain/alert-rules.js';
 import { ChannelPolicy } from '../deliveries/channels/channel-policy.js';
 import {
   type AlertRule,
+  type AlertRuleChanges,
   type AlertRuleFields,
   type AlertRuleFilter,
   requireRuleTenancy,
@@ -20,8 +27,12 @@ import {
 import { AlertRulesRepository } from './alert-rules.repository.js';
 
 /** Input of a new rule (unset fields take their defaults). */
-export type CreateAlertRuleInput = Partial<Omit<AlertRuleFields, 'name' | 'channels'>> &
-  Pick<AlertRuleFields, 'name' | 'channels'> & { readonly orgId?: string | undefined };
+export type CreateAlertRuleInput = Partial<
+  Omit<AlertRuleFields, 'name' | 'channels'>
+> &
+  Pick<AlertRuleFields, 'name' | 'channels'> & {
+    readonly orgId?: string | undefined;
+  };
 
 /** Use cases of alert rules: tenancy, scope rules, channel checks and the audit trail. */
 @Injectable()
@@ -58,7 +69,9 @@ export class AlertRulesService {
       quietMinutes: input.quietMinutes ?? 0,
       enabled: input.enabled ?? true,
     });
-    await this.record('alert_rule.create', rule, principal, request, { scope: rule.scope });
+    await this.record('alert_rule.create', rule, principal, request, {
+      scope: rule.scope,
+    });
     return rule;
   }
 
@@ -76,36 +89,53 @@ export class AlertRulesService {
     principal: Principal,
   ): Promise<Paginated<AlertRule>> {
     if (filter.orgId !== undefined) assertOrgAccess(principal, filter.orgId);
-    const { rows, total } = await this.rules.list(filter, requireRuleTenancy(principal), page);
+    const { rows, total } = await this.rules.list(
+      filter,
+      requireRuleTenancy(principal),
+      page,
+    );
     return toPaginated(rows, page, total);
   }
 
   /** Changes a rule; an empty change set returns it unchanged. */
   async update(
     id: string,
-    changes: Partial<AlertRuleFields>,
+    changes: AlertRuleChanges,
     principal: Principal,
     request?: AuditRequest,
   ): Promise<AlertRule> {
     const current = await this.get(id, principal);
-    const defined = definedChanges(changes);
-    const fields = Object.keys(defined);
+    const fields = changedFields(changes);
     if (fields.length === 0) return current;
-    if (defined.scope !== undefined && defined.scope !== current.scope) {
-      assertScope(defined.scope, principal);
+    if (changes.scope !== undefined && changes.scope !== current.scope) {
+      assertScope(changes.scope, principal);
     }
-    if (defined.channels !== undefined) this.channels.assertUsable(defined.channels, 'channels');
-    const rule = await this.rules.update(id, requireRuleTenancy(principal), defined);
+    if (changes.channels !== undefined) {
+      this.channels.assertUsable(changes.channels, 'channels');
+    }
+    const rule = await this.rules.update(
+      id,
+      requireRuleTenancy(principal),
+      changes,
+    );
     if (rule === undefined) throw ruleNotFound(id);
-    await this.record('alert_rule.update', rule, principal, request, { fields });
+    await this.record('alert_rule.update', rule, principal, request, {
+      fields,
+    });
     return rule;
   }
 
   /** Deletes a rule and its delivery history. */
-  async remove(id: string, principal: Principal, request?: AuditRequest): Promise<void> {
+  async remove(
+    id: string,
+    principal: Principal,
+    request?: AuditRequest,
+  ): Promise<void> {
     const rule = await this.rules.delete(id, requireRuleTenancy(principal));
     if (rule === undefined) throw ruleNotFound(id);
-    await this.record('alert_rule.delete', rule, principal, request, { name: rule.name });
+    await this.record('alert_rule.delete', rule, principal, request, {
+      name: rule.name,
+    });
   }
 
   private async record(
@@ -116,7 +146,13 @@ export class AlertRulesService {
     meta: Record<string, unknown>,
   ): Promise<void> {
     await this.audit.record(
-      { action, targetType: 'alert_rule', targetId: rule.id, orgId: rule.orgId, meta },
+      {
+        action,
+        targetType: 'alert_rule',
+        targetId: rule.id,
+        orgId: rule.orgId,
+        meta,
+      },
       principal,
       request,
     );
@@ -124,7 +160,10 @@ export class AlertRulesService {
 }
 
 /** The organization a new rule belongs to (spec §8.5: rules are tenant-private). */
-function owningOrg(requested: string | undefined, principal: Principal): string {
+function owningOrg(
+  requested: string | undefined,
+  principal: Principal,
+): string {
   if (requested !== undefined && requested !== principal.orgId) {
     if (!(principal.kind === 'user' && principal.isPlatformAdmin)) {
       throw new ForbiddenError('Rules are created in the active organization', {
@@ -143,23 +182,31 @@ function owningOrg(requested: string | undefined, principal: Principal): string 
 
 /** Authority and super_admin rules watch every vessel by default, others their fleet. */
 function defaultScope(principal: Principal): RuleScope {
-  return principal.kind === 'user' && principal.hasAuthorityAccess ? 'all' : 'org';
+  return principal.kind === 'user' && principal.hasAuthorityAccess
+    ? 'all'
+    : 'org';
 }
 
 /** Scope `all` ("authority-org rules may match any vessel") needs cross-tenant access. */
 function assertScope(scope: RuleScope, principal: Principal): void {
-  if (scope === 'all' && !(principal.kind === 'user' && principal.hasAuthorityAccess)) {
-    throw new ForbiddenError('Only authority and super_admin rules may watch every vessel', {
-      code: 'RULE_SCOPE_FORBIDDEN',
-    });
+  if (
+    scope === 'all' &&
+    !(principal.kind === 'user' && principal.hasAuthorityAccess)
+  ) {
+    throw new ForbiddenError(
+      'Only authority and super_admin rules may watch every vessel',
+      {
+        code: 'RULE_SCOPE_FORBIDDEN',
+      },
+    );
   }
 }
 
-/** The changes without `undefined` members (absent and undefined mean "keep"). */
-function definedChanges(changes: Partial<AlertRuleFields>): Partial<AlertRuleFields> {
-  return Object.fromEntries(
-    Object.entries(changes).filter(([, value]) => value !== undefined),
-  ) as Partial<AlertRuleFields>;
+/** Names of the fields a change set sets (absent and `undefined` mean "keep"). */
+function changedFields(changes: AlertRuleChanges): string[] {
+  return Object.entries(changes)
+    .filter(([, value]) => value !== undefined)
+    .map(([field]) => field);
 }
 
 function ruleNotFound(id: string): DomainError {

@@ -1,11 +1,17 @@
 import type { EmailRequestedV1 } from '@darmawanweb/ais-its-contracts/events';
-import { NonRetryableError, RetryableError } from '@darmawanweb/ais-its-nest/nats';
+import {
+  NonRetryableError,
+  RetryableError,
+} from '@darmawanweb/ais-its-nest/nats';
 import { Injectable, Logger } from '@nestjs/common';
 import * as z from 'zod';
 
 import { NotificationMetrics } from '../../metrics/notification-metrics.js';
 import { DeliveriesRepository } from '../deliveries/deliveries.repository.js';
-import { type EmailAttempt, EmailLogRepository } from './email-log.repository.js';
+import {
+  type EmailAttempt,
+  EmailLogRepository,
+} from './email-log.repository.js';
 import { Mailer } from './mailer.service.js';
 import { EmailTemplateDataError, renderEmail } from './templates/render.js';
 import type { RenderedEmail } from './templates/templates.js';
@@ -55,11 +61,17 @@ export class EmailService {
    * @throws {NonRetryableError} for data the template refuses
    * @throws {RetryableError} when the SMTP server refused or was unreachable
    */
-  async handle(envelope: EmailEnvelope, attempt: EmailDeliveryAttempt): Promise<'sent' | 'duplicate'> {
+  async handle(
+    envelope: EmailEnvelope,
+    attempt: EmailDeliveryAttempt,
+  ): Promise<'sent' | 'duplicate'> {
     const request = envelope.data;
     const existing = await this.log.find(envelope.id);
     if (existing !== undefined && existing.status !== 'retrying') {
-      this.metrics.emails.inc({ template: request.template, outcome: 'duplicate' });
+      this.metrics.emails.inc({
+        template: request.template,
+        outcome: 'duplicate',
+      });
       return 'duplicate';
     }
     const deliveryId = deliveryIdOf(request);
@@ -86,27 +98,46 @@ export class EmailService {
     try {
       const sent = await this.mailer.send(request.to, rendered);
       await this.log.recordSent(withSubject, sent.messageId);
-      if (deliveryId !== null) await this.deliveries.completeQueued(deliveryId, { sent: true });
+      if (deliveryId !== null)
+        await this.deliveries.completeQueued(deliveryId, { sent: true });
       this.metrics.emails.inc({ template: request.template, outcome: 'sent' });
       this.logger.log(
-        { emailId: envelope.id, template: request.template, source: envelope.source },
+        {
+          emailId: envelope.id,
+          template: request.template,
+          source: envelope.source,
+        },
         'E-mail sent',
       );
       return 'sent';
     } catch (error) {
-      const message = `SMTP: ${error instanceof Error ? error.message : 'unknown error'}`.slice(0, 1_000);
+      const message =
+        `SMTP: ${error instanceof Error ? error.message : 'unknown error'}`.slice(
+          0,
+          1_000,
+        );
       const final = attempt.deliveryCount >= attempt.maxDeliver;
       await this.fail(withSubject, message, final);
       throw new RetryableError(message, { cause: error });
     }
   }
 
-  private async fail(record: EmailAttempt, error: string, final: boolean): Promise<void> {
+  private async fail(
+    record: EmailAttempt,
+    error: string,
+    final: boolean,
+  ): Promise<void> {
     await this.log.recordFailure(record, final ? 'failed' : 'retrying', error);
     if (final && record.deliveryId !== null) {
-      await this.deliveries.completeQueued(record.deliveryId, { sent: false, error });
+      await this.deliveries.completeQueued(record.deliveryId, {
+        sent: false,
+        error,
+      });
     }
-    this.metrics.emails.inc({ template: record.template, outcome: final ? 'failed' : 'retry' });
+    this.metrics.emails.inc({
+      template: record.template,
+      outcome: final ? 'failed' : 'retry',
+    });
     this.logger.warn(
       { emailId: record.id, template: record.template, error, final },
       final ? 'E-mail failed for good' : 'E-mail attempt failed, retrying',

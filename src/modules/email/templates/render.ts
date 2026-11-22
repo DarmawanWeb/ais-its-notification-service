@@ -1,4 +1,7 @@
-import type { EmailTemplate, Locale } from '@darmawanweb/ais-its-contracts/domain';
+import type {
+  EmailTemplate,
+  Locale,
+} from '@darmawanweb/ais-its-contracts/domain';
 import type { EmailRequestedV1 } from '@darmawanweb/ais-its-contracts/events';
 
 import {

@@ -14,7 +14,11 @@ import {
   WEBHOOK_TIMESTAMP_HEADER,
   webhookTimestamp,
 } from '../../../domain/webhook-signature.js';
-import { type ChannelResult, failed, parseRetryAfter } from './channel-result.js';
+import {
+  type ChannelResult,
+  failed,
+  parseRetryAfter,
+} from './channel-result.js';
 import { isBlockedAddress } from './targets.js';
 
 /** A webhook host resolved to a blocked (loopback, private, …) address. */
@@ -28,29 +32,44 @@ class BlockedTargetError extends Error {
  * possible.
  */
 const guardedLookup: LookupFunction = (hostname, options, callback) => {
-  dnsLookup(hostname, { ...options, all: true }, (error, addresses: LookupAddress[]) => {
-    if (error !== null) {
-      callback(error, '', 0);
-      return;
-    }
-    if (addresses.length === 0 || addresses.some((entry) => isBlockedAddress(entry.address))) {
-      callback(
-        Object.assign(new BlockedTargetError(`${hostname} resolves to a blocked address`), {
-          code: 'EBLOCKED',
-        }),
-        '',
-        0,
-      );
-      return;
-    }
-    if (options.all === true) {
-      // Node's `all: true` form of the callback (happy eyeballs).
-      (callback as unknown as (error: null, addresses: LookupAddress[]) => void)(null, addresses);
-      return;
-    }
-    const [first] = addresses;
-    if (first !== undefined) callback(null, first.address, first.family);
-  });
+  dnsLookup(
+    hostname,
+    { ...options, all: true },
+    (error, addresses: LookupAddress[]) => {
+      if (error !== null) {
+        callback(error, '', 0);
+        return;
+      }
+      if (
+        addresses.length === 0 ||
+        addresses.some((entry) => isBlockedAddress(entry.address))
+      ) {
+        callback(
+          Object.assign(
+            new BlockedTargetError(`${hostname} resolves to a blocked address`),
+            {
+              code: 'EBLOCKED',
+            },
+          ),
+          '',
+          0,
+        );
+        return;
+      }
+      if (options.all === true) {
+        // Node's `all: true` form of the callback (happy eyeballs).
+        (
+          callback as unknown as (
+            error: null,
+            addresses: LookupAddress[],
+          ) => void
+        )(null, addresses);
+        return;
+      }
+      const [first] = addresses;
+      if (first !== undefined) callback(null, first.address, first.family);
+    },
+  );
 };
 
 /** Outcome of one HTTP exchange. */
@@ -77,10 +96,17 @@ export class WebhookChannel {
    * Posts `body`: 2xx = `sent`; 408, 429 and 5xx (and network errors) are
    * retried (honouring `Retry-After`); other statuses are permanent.
    */
-  async post(url: string, body: unknown, deliveryId: string): Promise<ChannelResult> {
+  async post(
+    url: string,
+    body: unknown,
+    deliveryId: string,
+  ): Promise<ChannelResult> {
     const secret = this.config.WEBHOOK_SIGNING_SECRET;
     if (secret === undefined) {
-      return failed('Webhooks are not configured (WEBHOOK_SIGNING_SECRET)', true);
+      return failed(
+        'Webhooks are not configured (WEBHOOK_SIGNING_SECRET)',
+        true,
+      );
     }
     let target: URL;
     try {
@@ -95,24 +121,40 @@ export class WebhookChannel {
     const raw = JSON.stringify(body);
     const timestamp = webhookTimestamp(new Date());
     try {
-      const outcome = await this.exchange(target, raw, {
-        'content-type': 'application/json',
-        'user-agent': `ais-its-notification/${this.config.SERVICE_VERSION}`,
-        [WEBHOOK_SIGNATURE_HEADER]: signWebhookPayload(secret, timestamp, raw),
-        [WEBHOOK_TIMESTAMP_HEADER]: timestamp,
-        [WEBHOOK_DELIVERY_HEADER]: deliveryId,
-      }, allowPrivate);
-      if (outcome.status >= 200 && outcome.status < 300) return { outcome: 'sent' };
+      const outcome = await this.exchange(
+        target,
+        raw,
+        {
+          'content-type': 'application/json',
+          'user-agent': `ais-its-notification/${this.config.SERVICE_VERSION}`,
+          [WEBHOOK_SIGNATURE_HEADER]: signWebhookPayload(
+            secret,
+            timestamp,
+            raw,
+          ),
+          [WEBHOOK_TIMESTAMP_HEADER]: timestamp,
+          [WEBHOOK_DELIVERY_HEADER]: deliveryId,
+        },
+        allowPrivate,
+      );
+      if (outcome.status >= 200 && outcome.status < 300)
+        return { outcome: 'sent' };
       const transient =
-        outcome.status === 408 || outcome.status === 429 || outcome.status >= 500;
+        outcome.status === 408 ||
+        outcome.status === 429 ||
+        outcome.status >= 500;
       return failed(
         `Webhook answered HTTP ${outcome.status}`,
         !transient,
         transient ? parseRetryAfter(outcome.retryAfter, new Date()) : undefined,
       );
     } catch (error) {
-      if (error instanceof BlockedTargetError) return failed(error.message, true);
-      const code = error instanceof Error && 'code' in error ? String(error.code) : undefined;
+      if (error instanceof BlockedTargetError)
+        return failed(error.message, true);
+      const code =
+        error instanceof Error && 'code' in error
+          ? String(error.code)
+          : undefined;
       return failed(
         `Webhook unreachable: ${code ?? (error instanceof Error ? error.message : 'unknown error')}`,
         false,
@@ -132,7 +174,10 @@ export class WebhookChannel {
         target,
         {
           method: 'POST',
-          headers: { ...headers, 'content-length': String(Buffer.byteLength(raw)) },
+          headers: {
+            ...headers,
+            'content-length': String(Buffer.byteLength(raw)),
+          },
           timeout: this.config.WEBHOOK_TIMEOUT_MS,
           ...(allowPrivate ? {} : { lookup: guardedLookup }),
         },
@@ -152,7 +197,9 @@ export class WebhookChannel {
         },
       );
       request.on('timeout', () => {
-        request.destroy(Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }));
+        request.destroy(
+          Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }),
+        );
       });
       request.on('error', reject);
       request.end(raw);
@@ -164,5 +211,7 @@ export class WebhookChannel {
 function isBlockedHostLiteral(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
   if (host === 'localhost' || host.endsWith('.localhost')) return true;
-  return /^[\d.]+$/.test(host) || host.includes(':') ? isBlockedAddress(host) : false;
+  return /^[\d.]+$/.test(host) || host.includes(':')
+    ? isBlockedAddress(host)
+    : false;
 }

@@ -1,9 +1,5 @@
 import type { BBox } from '@darmawanweb/ais-its-contracts/domain';
-import {
-  REALTIME_MAX_TILES,
-  REALTIME_TILE_ZOOM,
-  roomsForViewport,
-} from '@darmawanweb/ais-its-contracts/realtime';
+import { roomsForViewport } from '@darmawanweb/ais-its-contracts/realtime';
 
 /** Room changes of a `viewport:set`. */
 export interface ViewportPlan {
@@ -21,16 +17,24 @@ export interface ViewportPlan {
 
 /**
  * Plans the rooms of a map viewport (spec §9): the slippy-map tiles at zoom
- * {@link REALTIME_TILE_ZOOM} covering the box (contracts tile math), or
- * `tile:all` when more than {@link REALTIME_MAX_TILES} tiles would be needed.
+ * 6 (`REALTIME_TILE_ZOOM`) covering the box (contracts tile math), or
+ * `tile:all` when more than 64 tiles (`REALTIME_MAX_TILES`) would be needed.
  * Rooms of the previous viewport that the new one does not cover are left;
  * rooms already joined are kept, so their batches are not interrupted.
  *
+ * Proposed method id (not yet in docs/references/methods.json).
+ *
+ * @method notify.realtime_viewport_rooms
+ * @see ../../../../../docs/PLATFORM_SPEC.md §9 — `viewport:set`
+ * @see https://wiki.openstreetmap.org/wiki/Slippy_map_tilenames — tile numbering (Web Mercator)
  * @param current - viewport rooms the connection is in
  * @param bbox - `[minLon, minLat, maxLon, maxLat]`
  * @throws RangeError for an inverted or antimeridian-crossing box
  */
-export function planViewport(current: ReadonlySet<string>, bbox: BBox): ViewportPlan {
+export function planViewport(
+  current: ReadonlySet<string>,
+  bbox: BBox,
+): ViewportPlan {
   const viewport = roomsForViewport(bbox);
   const next = new Set(viewport.rooms);
   return {

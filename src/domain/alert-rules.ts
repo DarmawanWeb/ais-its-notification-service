@@ -67,7 +67,10 @@ export interface AlertFacts {
  * @param alert - the alert and the owners of its vessels
  * @returns `true` when the rule matches
  */
-export function ruleMatchesAlert(rule: RuleCriteria, alert: AlertFacts): boolean {
+export function ruleMatchesAlert(
+  rule: RuleCriteria,
+  alert: AlertFacts,
+): boolean {
   if (!rule.enabled) return false;
   if (
     rule.scope === 'org' &&
@@ -77,7 +80,8 @@ export function ruleMatchesAlert(rule: RuleCriteria, alert: AlertFacts): boolean
     return false;
   }
   if (rule.types.length > 0 && !rule.types.includes(alert.type)) return false;
-  if (rule.domains.length > 0 && !rule.domains.includes(alert.domain)) return false;
+  if (rule.domains.length > 0 && !rule.domains.includes(alert.domain))
+    return false;
   if (!isSeverityAtLeast(alert.severity, rule.minSeverity)) return false;
   if (
     rule.mmsi.length > 0 &&

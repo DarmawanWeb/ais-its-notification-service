@@ -17,7 +17,9 @@ export class TestThrottle {
    * @returns `0` when allowed, else the milliseconds until the next attempt is allowed
    */
   take(key: string, now: number): number {
-    const recent = (this.hits.get(key) ?? []).filter((at) => now - at < this.windowMs);
+    const recent = (this.hits.get(key) ?? []).filter(
+      (at) => now - at < this.windowMs,
+    );
     if (recent.length >= this.limit) {
       this.hits.set(key, recent);
       const oldest = recent[0] ?? now;

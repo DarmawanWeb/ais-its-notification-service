@@ -19,13 +19,26 @@ export function failed(
   permanent: boolean,
   retryAfterMs?: number,
 ): ChannelResult {
-  return { outcome: 'failed', permanent, error: error.slice(0, 1_000), retryAfterMs };
+  return {
+    outcome: 'failed',
+    permanent,
+    error: error.slice(0, 1_000),
+    retryAfterMs,
+  };
 }
 
 /** `Retry-After` (seconds or HTTP date) in ms, if present and sane (≤ 1 day). */
-export function parseRetryAfter(value: string | null | undefined, now: Date): number | undefined {
-  if (value === null || value === undefined || value.trim() === '') return undefined;
+export function parseRetryAfter(
+  value: string | null | undefined,
+  now: Date,
+): number | undefined {
+  if (value === null || value === undefined || value.trim() === '')
+    return undefined;
   const seconds = Number(value);
-  const ms = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(value) - now.getTime();
-  return Number.isFinite(ms) && ms >= 0 && ms <= 86_400_000 ? Math.ceil(ms) : undefined;
+  const ms = Number.isFinite(seconds)
+    ? seconds * 1000
+    : Date.parse(value) - now.getTime();
+  return Number.isFinite(ms) && ms >= 0 && ms <= 86_400_000
+    ? Math.ceil(ms)
+    : undefined;
 }

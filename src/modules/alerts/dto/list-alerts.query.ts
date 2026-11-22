@@ -7,7 +7,10 @@ import {
   type AlertSeverity,
   type AlertStatus,
 } from '@darmawanweb/ais-its-contracts/domain';
-import { CursorQueryDto, TimeRangeQueryDto } from '@darmawanweb/ais-its-nest/http';
+import {
+  CursorQueryDto,
+  TimeRangeQueryDto,
+} from '@darmawanweb/ais-its-nest/http';
 import { ApiPropertyOptional, IntersectionType } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import { IsIn, IsInt, IsOptional, Matches, Max, Min } from 'class-validator';
@@ -16,7 +19,10 @@ import { IsIn, IsInt, IsOptional, Matches, Max, Min } from 'class-validator';
  * Query of `GET /alerts` (cursor list, spec §5): `from` / `to` bound the first
  * occurrence (`to` defaults to now, no lower bound by default).
  */
-export class ListAlertsQuery extends IntersectionType(CursorQueryDto, TimeRangeQueryDto) {
+export class ListAlertsQuery extends IntersectionType(
+  CursorQueryDto,
+  TimeRangeQueryDto,
+) {
   @ApiPropertyOptional({ enum: ALERT_STATUSES })
   @IsOptional()
   @IsIn(ALERT_STATUSES)
@@ -37,7 +43,10 @@ export class ListAlertsQuery extends IntersectionType(CursorQueryDto, TimeRangeQ
   @IsIn(ALERT_SEVERITIES)
   readonly severity?: AlertSeverity;
 
-  @ApiPropertyOptional({ example: 525005223, description: 'Vessel or related vessel' })
+  @ApiPropertyOptional({
+    example: 525005223,
+    description: 'Vessel or related vessel',
+  })
   @IsOptional()
   @Type(() => Number)
   @IsInt()

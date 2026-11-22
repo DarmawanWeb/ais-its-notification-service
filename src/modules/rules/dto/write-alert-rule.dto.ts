@@ -9,7 +9,12 @@ import {
   NOTIFICATION_CHANNELS,
   type NotificationChannel,
 } from '@darmawanweb/ais-its-contracts/domain';
-import { ApiProperty, ApiPropertyOptional, OmitType, PartialType } from '@nestjs/swagger';
+import {
+  ApiProperty,
+  ApiPropertyOptional,
+  OmitType,
+  PartialType,
+} from '@nestjs/swagger';
 import { Transform, type TransformFnParams, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -58,7 +63,11 @@ export class RuleChannelDto {
 
 /** `POST /alert-rules`. */
 export class CreateAlertRuleDto {
-  @ApiProperty({ minLength: 1, maxLength: 120, example: 'Pipeline danger to the operations room' })
+  @ApiProperty({
+    minLength: 1,
+    maxLength: 120,
+    example: 'Pipeline danger to the operations room',
+  })
   @Transform(trimString)
   @IsString()
   @Length(1, 120)
@@ -74,7 +83,11 @@ export class CreateAlertRuleDto {
   @IsIn(['org', 'all'])
   readonly scope?: RuleScope;
 
-  @ApiPropertyOptional({ type: [String], example: ['ews', 'collision'], default: [] })
+  @ApiPropertyOptional({
+    type: [String],
+    example: ['ews', 'collision'],
+    default: [],
+  })
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(32)
@@ -145,7 +158,8 @@ export class CreateAlertRuleDto {
 
   @ApiPropertyOptional({
     format: 'uuid',
-    description: 'Owning organization (super_admin only; default the active organization)',
+    description:
+      'Owning organization (super_admin only; default the active organization)',
   })
   @IsOptional()
   @IsUUID()

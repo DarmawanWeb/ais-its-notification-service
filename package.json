@@ -65,6 +65,7 @@
     "@swc/cli": "^0.8.2",
     "@swc/core": "^1.16.22",
     "@types/node": "^24.19.2",
+    "@types/nodemailer": "^8.0.2",
     "@types/pg": "^8.23.1",
     "eslint": "^9.39.5",
     "eslint-config-prettier": "^10.1.8",

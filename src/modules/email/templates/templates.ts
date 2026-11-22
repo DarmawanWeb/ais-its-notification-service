@@ -1,5 +1,8 @@
 import { isRole, ROLE_LABELS } from '@darmawanweb/ais-its-contracts/auth';
-import type { EmailTemplate, Locale } from '@darmawanweb/ais-its-contracts/domain';
+import type {
+  EmailTemplate,
+  Locale,
+} from '@darmawanweb/ais-its-contracts/domain';
 import { RealtimeAlertSchema } from '@darmawanweb/ais-its-contracts/realtime';
 import * as z from 'zod';
 
@@ -14,22 +17,36 @@ export interface RenderedEmail {
 }
 
 const HttpUrlSchema = z.url({ protocol: /^https?$/ });
-const ShortText = z.string().trim().min(1).max(200);
+
+/**
+ * Optional display text (names, labels): trimmed and clipped to `max`
+ * characters; empty, `null` and absent all mean "not given". Cosmetic fields
+ * never make an e-mail (a password reset!) undeliverable.
+ */
+function optionalText(max: number) {
+  return z
+    .string()
+    .nullish()
+    .transform((value) => {
+      const text = value?.trim().slice(0, max);
+      return text === undefined || text === '' ? undefined : text;
+    });
+}
 
 /** `data` of `password_reset` (sent by auth: `{ name, link, expiresInMinutes }`). */
 export const PasswordResetDataSchema = z.object({
   link: HttpUrlSchema,
-  name: ShortText.optional(),
+  name: optionalText(200),
   expiresInMinutes: z.int().min(1).max(10_080).optional(),
 });
 
 /** `data` of `account_invite` (sent by auth). */
 export const AccountInviteDataSchema = z.object({
   link: HttpUrlSchema,
-  name: ShortText.optional(),
-  organizationName: ShortText.optional(),
-  role: z.string().max(64).optional(),
-  invitedBy: ShortText.optional(),
+  name: optionalText(200),
+  organizationName: optionalText(200),
+  role: optionalText(64),
+  invitedBy: optionalText(200),
   expiresInHours: z.int().min(1).max(8_760).optional(),
 });
 
@@ -37,16 +54,16 @@ export const AccountInviteDataSchema = z.object({
 export const AlertEmailDataSchema = z.object({
   alert: RealtimeAlertSchema,
   link: HttpUrlSchema,
-  vesselName: ShortText.nullable().optional(),
-  ruleName: ShortText.nullable().optional(),
+  vesselName: optionalText(200),
+  ruleName: optionalText(200),
   /** Delivery the e-mail belongs to (its status is updated after sending). */
   deliveryId: z.uuid().optional(),
 });
 
 /** `data` of `test` (`POST /notifications/test`). */
 export const TestEmailDataSchema = z.object({
-  message: z.string().trim().max(500).optional(),
-  requestedBy: ShortText.optional(),
+  message: optionalText(500),
+  requestedBy: optionalText(200),
 });
 
 /** Template data schemas by template name. */
@@ -68,7 +85,10 @@ interface EmailContent {
   /** Paragraphs (plain text). */
   readonly paragraphs: readonly string[];
   /** Labelled facts shown as a table. */
-  readonly facts?: readonly { readonly label: string; readonly value: string }[];
+  readonly facts?: readonly {
+    readonly label: string;
+    readonly value: string;
+  }[];
   readonly action?: { readonly label: string; readonly url: string };
   /** Small print below the action. */
   readonly notes?: readonly string[];
@@ -91,7 +111,10 @@ function greeting(locale: Locale, name: string | undefined): string {
   return name === undefined ? 'Hello,' : `Hello ${name},`;
 }
 
-function passwordReset(locale: Locale, data: TemplateData['password_reset']): EmailContent {
+function passwordReset(
+  locale: Locale,
+  data: TemplateData['password_reset'],
+): EmailContent {
   const minutes = data.expiresInMinutes;
   if (locale === 'id') {
     return {
@@ -104,7 +127,9 @@ function passwordReset(locale: Locale, data: TemplateData['password_reset']): Em
           : `Tautan berlaku ${minutes} menit dan hanya dapat digunakan sekali.`,
       ],
       action: { label: 'Atur ulang kata sandi', url: data.link },
-      notes: ['Jika Anda tidak meminta ini, abaikan e-mail ini: kata sandi Anda tidak berubah.'],
+      notes: [
+        'Jika Anda tidak meminta ini, abaikan e-mail ini: kata sandi Anda tidak berubah.',
+      ],
     };
   }
   return {
@@ -117,13 +142,20 @@ function passwordReset(locale: Locale, data: TemplateData['password_reset']): Em
         : `The link is valid for ${minutes} minutes and can be used once.`,
     ],
     action: { label: 'Reset password', url: data.link },
-    notes: ['If you did not request this, ignore this e-mail: your password stays unchanged.'],
+    notes: [
+      'If you did not request this, ignore this e-mail: your password stays unchanged.',
+    ],
   };
 }
 
-function accountInvite(locale: Locale, data: TemplateData['account_invite']): EmailContent {
+function accountInvite(
+  locale: Locale,
+  data: TemplateData['account_invite'],
+): EmailContent {
   const role =
-    data.role !== undefined && isRole(data.role) ? ROLE_LABELS[data.role][locale] : data.role;
+    data.role !== undefined && isRole(data.role)
+      ? ROLE_LABELS[data.role][locale]
+      : data.role;
   const hours = data.expiresInHours;
   if (locale === 'id') {
     const organization = data.organizationName ?? 'sebuah organisasi';
@@ -140,7 +172,9 @@ function accountInvite(locale: Locale, data: TemplateData['account_invite']): Em
         ...(hours === undefined ? [] : [`Undangan berlaku ${hours} jam.`]),
       ],
       action: { label: 'Terima undangan', url: data.link },
-      notes: ['Jika Anda tidak mengenal pengirim undangan ini, abaikan e-mail ini.'],
+      notes: [
+        'Jika Anda tidak mengenal pengirim undangan ini, abaikan e-mail ini.',
+      ],
     };
   }
   const organization = data.organizationName ?? 'an organization';
@@ -154,7 +188,9 @@ function accountInvite(locale: Locale, data: TemplateData['account_invite']): Em
       `${data.invitedBy ?? 'An administrator'} invited you to join ${organization}` +
         `${role === undefined ? '' : ` as ${role}`} on ${BRAND}.`,
       'Use the button below to choose your password and activate your account.',
-      ...(hours === undefined ? [] : [`The invitation is valid for ${hours} hours.`]),
+      ...(hours === undefined
+        ? []
+        : [`The invitation is valid for ${hours} hours.`]),
     ],
     action: { label: 'Accept invitation', url: data.link },
     notes: ['If you do not know who sent this invitation, ignore this e-mail.'],
@@ -170,14 +206,17 @@ function alertEmail(locale: Locale, data: TemplateData['alert']): EmailContent {
   });
   return {
     subject: message.subject,
-    paragraphs: [message.heading, message.summary].filter((text) => text !== ''),
+    paragraphs: [message.heading, message.summary].filter(
+      (text) => text !== '',
+    ),
     facts: message.lines,
     action: { label: message.linkLabel, url: message.link },
   };
 }
 
 function testEmail(locale: Locale, data: TemplateData['test']): EmailContent {
-  const extra = data.message === undefined || data.message === '' ? [] : [data.message];
+  const extra =
+    data.message === undefined || data.message === '' ? [] : [data.message];
   if (locale === 'id') {
     return {
       subject: `Notifikasi uji ${BRAND}`,
@@ -196,7 +235,9 @@ function testEmail(locale: Locale, data: TemplateData['test']): EmailContent {
       `This is a test e-mail from ${BRAND}. If you received it, e-mail notifications to this address work.`,
       ...extra,
     ],
-    ...(data.requestedBy === undefined ? {} : { notes: [`Requested by ${data.requestedBy}.`] }),
+    ...(data.requestedBy === undefined
+      ? {}
+      : { notes: [`Requested by ${data.requestedBy}.`] }),
   };
 }
 
@@ -215,46 +256,109 @@ export function templateContent<Name extends EmailTemplate>(
       return accountInvite(locale, data as TemplateData['account_invite']);
     case 'alert':
       return alertEmail(locale, data as TemplateData['alert']);
-    default:
+    case 'test':
       return testEmail(locale, data as TemplateData['test']);
   }
 }
 
 function layoutHtml(locale: Locale, content: EmailContent): SafeHtml {
-  const url = content.action === undefined ? undefined : safeUrl(content.action.url);
+  const url =
+    content.action === undefined ? undefined : safeUrl(content.action.url);
   const facts =
     content.facts === undefined || content.facts.length === 0
       ? ''
-      : html`<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;margin:8px 0 16px">${content.facts.map(
-          (fact) =>
-            html`<tr><td style="padding:6px 12px 6px 0;color:#52606d;white-space:nowrap;vertical-align:top">${fact.label}</td><td style="padding:6px 0;color:#1f2933">${fact.value}</td></tr>`,
-        )}</table>`;
+      : html`<table
+          role="presentation"
+          cellpadding="0"
+          cellspacing="0"
+          style="width:100%;border-collapse:collapse;margin:8px 0 16px"
+        >
+          ${content.facts.map(
+            (fact) =>
+              html`<tr>
+                <td
+                  style="padding:6px 12px 6px 0;color:#52606d;white-space:nowrap;vertical-align:top"
+                >
+                  ${fact.label}
+                </td>
+                <td style="padding:6px 0;color:#1f2933">${fact.value}</td>
+              </tr>`,
+          )}
+        </table>`;
   const action =
     content.action === undefined || url === undefined
       ? ''
-      : html`<p style="margin:24px 0"><a href="${url}" style="display:inline-block;padding:12px 20px;background:#0b6fa4;color:#ffffff;text-decoration:none;border-radius:4px;font-weight:bold">${content.action.label}</a></p><p style="margin:0 0 16px;font-size:12px;color:#61707b">${COPY_LINK[locale]}<br><span style="word-break:break-all">${url}</span></p>`;
+      : html`<p style="margin:24px 0">
+            <a
+              href="${url}"
+              style="display:inline-block;padding:12px 20px;background:#0b6fa4;color:#ffffff;text-decoration:none;border-radius:4px;font-weight:bold"
+              >${content.action.label}</a
+            >
+          </p>
+          <p style="margin:0 0 16px;font-size:12px;color:#61707b">
+            ${COPY_LINK[locale]}<br /><span style="word-break:break-all"
+              >${url}</span
+            >
+          </p>`;
   const notes = (content.notes ?? []).map(
-    (note) => html`<p style="margin:0 0 8px;font-size:13px;color:#61707b">${note}</p>`,
+    (note) =>
+      html`<p style="margin:0 0 8px;font-size:13px;color:#61707b">${note}</p>`,
   );
   return html`<!doctype html>
-<html lang="${locale}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${content.subject}</title></head>
-<body style="margin:0;padding:0;background:#f4f6f8;font-family:Arial,Helvetica,sans-serif;color:#1f2933">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 12px">
-<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;max-width:600px;background:#ffffff;border-radius:8px">
-<tr><td style="padding:18px 24px;background:#0b3d5c;color:#ffffff;font-size:18px;font-weight:bold;border-radius:8px 8px 0 0">${BRAND}</td></tr>
-<tr><td style="padding:24px;font-size:15px;line-height:1.5">${content.paragraphs.map(
-    (paragraph) => html`<p style="margin:0 0 12px">${paragraph}</p>`,
-  )}${facts}${action}${notes}</td></tr>
-<tr><td style="padding:16px 24px;font-size:12px;color:#61707b;border-top:1px solid #e4e7eb">${FOOTER[locale]}</td></tr>
-</table></td></tr></table>
-</body></html>
-`;
+    <html lang="${locale}">
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>${content.subject}</title>
+      </head>
+      <body
+        style="margin:0;padding:0;background:#f4f6f8;font-family:Arial,Helvetica,sans-serif;color:#1f2933"
+      >
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+          <tr>
+            <td align="center" style="padding:24px 12px">
+              <table
+                role="presentation"
+                cellpadding="0"
+                cellspacing="0"
+                style="width:100%;max-width:600px;background:#ffffff;border-radius:8px"
+              >
+                <tr>
+                  <td
+                    style="padding:18px 24px;background:#0b3d5c;color:#ffffff;font-size:18px;font-weight:bold;border-radius:8px 8px 0 0"
+                  >
+                    ${BRAND}
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:24px;font-size:15px;line-height:1.5">
+                    ${content.paragraphs.map(
+                      (paragraph) =>
+                        html`<p style="margin:0 0 12px">${paragraph}</p>`,
+                    )}${facts}${action}${notes}
+                  </td>
+                </tr>
+                <tr>
+                  <td
+                    style="padding:16px 24px;font-size:12px;color:#61707b;border-top:1px solid #e4e7eb"
+                  >
+                    ${FOOTER[locale]}
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </body>
+    </html> `;
 }
 
 function layoutText(locale: Locale, content: EmailContent): string {
   const blocks: string[] = [...content.paragraphs];
   if (content.facts !== undefined && content.facts.length > 0) {
-    blocks.push(content.facts.map((fact) => `${fact.label}: ${fact.value}`).join('\n'));
+    blocks.push(
+      content.facts.map((fact) => `${fact.label}: ${fact.value}`).join('\n'),
+    );
   }
   if (content.action !== undefined) {
     blocks.push(`${content.action.label}: ${safeUrl(content.action.url)}`);
@@ -265,7 +369,10 @@ function layoutText(locale: Locale, content: EmailContent): string {
 }
 
 /** Text and HTML of a template's content (the HTML escapes every value). */
-export function layoutEmail(locale: Locale, content: EmailContent): RenderedEmail {
+export function layoutEmail(
+  locale: Locale,
+  content: EmailContent,
+): RenderedEmail {
   return {
     subject: content.subject.replace(/[\r\n]+/g, ' ').trim(),
     text: layoutText(locale, content),

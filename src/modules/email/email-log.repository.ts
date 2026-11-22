@@ -1,4 +1,7 @@
-import type { EmailTemplate, Locale } from '@darmawanweb/ais-its-contracts/domain';
+import type {
+  EmailTemplate,
+  Locale,
+} from '@darmawanweb/ais-its-contracts/domain';
 import { type Database, InjectDb } from '@darmawanweb/ais-its-nest/db';
 import { Injectable } from '@nestjs/common';
 import { eq, lt, sql } from 'drizzle-orm';
@@ -40,7 +43,11 @@ export class EmailLogRepository {
   constructor(@InjectDb() private readonly db: Database<typeof schema>) {}
 
   async find(id: string): Promise<EmailLogEntry | undefined> {
-    const [row] = await this.db.select().from(emailLog).where(eq(emailLog.id, id)).limit(1);
+    const [row] = await this.db
+      .select()
+      .from(emailLog)
+      .where(eq(emailLog.id, id))
+      .limit(1);
     return row;
   }
 
@@ -69,7 +76,13 @@ export class EmailLogRepository {
   async recordSent(attempt: EmailAttempt, messageId: string): Promise<void> {
     await this.db
       .insert(emailLog)
-      .values({ ...attempt, status: 'sent', attempts: 1, messageId, sentAt: sql`now()` })
+      .values({
+        ...attempt,
+        status: 'sent',
+        attempts: 1,
+        messageId,
+        sentAt: sql`now()`,
+      })
       .onConflictDoUpdate({
         target: emailLog.id,
         set: {

@@ -10,9 +10,18 @@ export const OPENAPI: OpenApiOptions = {
     `${SERVICE.description}. Realtime: socket.io at path /ws on the same origin ` +
     '(handshake auth { token }, events of @darmawanweb/ais-its-contracts/realtime).',
   tags: [
-    { name: 'alerts', description: 'Alert inbox of safety and surveillance alerts' },
-    { name: 'alert-rules', description: 'Alert rules and their delivery channels' },
-    { name: 'notifications', description: 'Test notifications and the delivery log' },
+    {
+      name: 'alerts',
+      description: 'Alert inbox of safety and surveillance alerts',
+    },
+    {
+      name: 'alert-rules',
+      description: 'Alert rules and their delivery channels',
+    },
+    {
+      name: 'notifications',
+      description: 'Test notifications and the delivery log',
+    },
     {
       name: 'methodology',
       description: 'Methods of the methodology catalog implemented here',

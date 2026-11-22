@@ -15,6 +15,12 @@ import { DeliveryPlanner } from './delivery-planner.js';
 @Module({
   imports: [VesselsModule, RulesModule, DeliveriesModule, RealtimeModule],
   controllers: [AlertsController],
-  providers: [AlertsRepository, AlertsService, AlertIngestService, AlertsConsumer, DeliveryPlanner],
+  providers: [
+    AlertsRepository,
+    AlertsService,
+    AlertIngestService,
+    AlertsConsumer,
+    DeliveryPlanner,
+  ],
 })
 export class AlertsModule {}

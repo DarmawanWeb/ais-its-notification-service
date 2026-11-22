@@ -1,6 +1,9 @@
 import type { Locale } from '@darmawanweb/ais-its-contracts/domain';
 
-import { type AlertMessage, buildAlertMessage } from '../../domain/alert-message.js';
+import {
+  type AlertMessage,
+  buildAlertMessage,
+} from '../../domain/alert-message.js';
 import { formatTelegramAlert } from './channels/telegram-format.js';
 import type { DeliveryPayload } from './delivery.js';
 
@@ -69,7 +72,11 @@ export function testText(locale: Locale): string {
 }
 
 /** JSON body of a test webhook. */
-export function webhookTestBody(id: string, locale: Locale, sentAt: Date): Record<string, unknown> {
+export function webhookTestBody(
+  id: string,
+  locale: Locale,
+  sentAt: Date,
+): Record<string, unknown> {
   return {
     deliveryId: id,
     event: 'test' satisfies WebhookEvent,

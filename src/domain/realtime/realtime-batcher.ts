@@ -18,6 +18,8 @@ export interface VesselItem {
  * Items of one batch window per room, keeping only the latest item of every
  * vessel (spec §9: "latest position per vessel in the window"). The latest is
  * the item with the newest `time`; for equal times the last one added wins.
+ *
+ * @method notify.realtime_batching
  */
 export class LatestPerVesselBatch<T extends VesselItem> {
   private rooms = new Map<string, Map<number, T>>();
@@ -30,7 +32,10 @@ export class LatestPerVesselBatch<T extends VesselItem> {
       this.rooms.set(room, items);
     }
     const current = items.get(item.mmsi);
-    if (current === undefined || Date.parse(item.time) >= Date.parse(current.time)) {
+    if (
+      current === undefined ||
+      Date.parse(item.time) >= Date.parse(current.time)
+    ) {
       items.set(item.mmsi, item);
     }
   }
@@ -43,7 +48,8 @@ export class LatestPerVesselBatch<T extends VesselItem> {
   /** Ends the window: returns the items per room and starts an empty one. */
   drain(): Map<string, T[]> {
     const drained = new Map<string, T[]>();
-    for (const [room, items] of this.rooms) drained.set(room, [...items.values()]);
+    for (const [room, items] of this.rooms)
+      drained.set(room, [...items.values()]);
     this.rooms = new Map();
     return drained;
   }
@@ -72,6 +78,11 @@ export type RoomActivity = (room: string) => boolean;
  * {@link flushAll} (every 5 s) end the windows and return the batches to emit,
  * each with the latest item per vessel. Rooms without members are skipped
  * when items arrive and when windows end.
+ *
+ * Proposed method id (not yet in docs/references/methods.json).
+ *
+ * @method notify.realtime_batching
+ * @see ../../../../../docs/PLATFORM_SPEC.md §9 — `positions` / `safety:states`, 1 s and 5 s windows
  */
 export class RealtimeBatcher {
   private readonly tilePositions = new LatestPerVesselBatch<RealtimePosition>();
@@ -85,7 +96,8 @@ export class RealtimeBatcher {
   /** Collects a position for its tile room and for `tile:all`. */
   addPosition(tileRoom: string, item: RealtimePosition): void {
     if (this.isActive(tileRoom)) this.tilePositions.add(tileRoom, item);
-    if (this.isActive(ALL_TILES_ROOM)) this.allPositions.add(ALL_TILES_ROOM, item);
+    if (this.isActive(ALL_TILES_ROOM))
+      this.allPositions.add(ALL_TILES_ROOM, item);
   }
 
   /** Collects a safety state for its tile room and for `tile:all`. */
@@ -113,7 +125,11 @@ export class RealtimeBatcher {
     const out: OutgoingBatch[] = [];
     for (const [room, items] of positions.drain()) {
       if (items.length > 0 && this.isActive(room)) {
-        out.push({ room, event: REALTIME_SERVER_EVENTS.POSITIONS, payload: { at: time, items } });
+        out.push({
+          room,
+          event: REALTIME_SERVER_EVENTS.POSITIONS,
+          payload: { at: time, items },
+        });
       }
     }
     for (const [room, items] of safety.drain()) {

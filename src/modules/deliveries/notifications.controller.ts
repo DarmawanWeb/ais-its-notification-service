@@ -1,15 +1,34 @@
-import { CurrentPrincipal, type Principal, RequirePermissions } from '@darmawanweb/ais-its-nest/auth';
+import {
+  CurrentPrincipal,
+  type Principal,
+  RequirePermissions,
+} from '@darmawanweb/ais-its-nest/auth';
 import { decodeQueryCursor } from '@darmawanweb/ais-its-nest/http';
-import { Body, Controller, Get, HttpCode, HttpStatus, Post, Query, Req } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Post,
+  Query,
+  Req,
+} from '@nestjs/common';
 import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import * as z from 'zod';
 
 import { DeliveryPageDto, ListDeliveriesQuery } from './dto/delivery.dto.js';
-import { TestNotificationDto, TestNotificationResultDto } from './dto/test-notification.dto.js';
+import {
+  TestNotificationDto,
+  TestNotificationResultDto,
+} from './dto/test-notification.dto.js';
 import { NotificationsService } from './notifications.service.js';
 
-const DeliveryCursorSchema = z.object({ createdAt: z.iso.datetime(), id: z.uuid() });
+const DeliveryCursorSchema = z.object({
+  createdAt: z.iso.datetime(),
+  id: z.uuid(),
+});
 
 /** `/api/v2/notifications`: test notifications and the delivery log. */
 @ApiTags('notifications')
@@ -31,12 +50,16 @@ export class NotificationsController {
     @CurrentPrincipal() principal: Principal,
     @Req() request: FastifyRequest,
   ): Promise<TestNotificationResultDto> {
-    return new TestNotificationResultDto(await this.notifications.test(body, principal, request));
+    return new TestNotificationResultDto(
+      await this.notifications.test(body, principal, request),
+    );
   }
 
   @Get('deliveries')
   @RequirePermissions('alert_rule:write')
-  @ApiOperation({ summary: 'Deliveries of the alert rules of the organization, newest first' })
+  @ApiOperation({
+    summary: 'Deliveries of the alert rules of the organization, newest first',
+  })
   @ApiOkResponse({ type: DeliveryPageDto })
   async deliveries(
     @Query() query: ListDeliveriesQuery,

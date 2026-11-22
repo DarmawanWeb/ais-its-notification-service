@@ -14,7 +14,11 @@ import { EmailChannel } from './channels/email.channel.js';
 import { TelegramChannel } from './channels/telegram.channel.js';
 import { WebhookChannel } from './channels/webhook.channel.js';
 import { DeliveriesRepository } from './deliveries.repository.js';
-import { type Delivery, type DeliveryPayload, DeliveryPayloadSchema } from './delivery.js';
+import {
+  type Delivery,
+  type DeliveryPayload,
+  DeliveryPayloadSchema,
+} from './delivery.js';
 import { telegramText, webhookAlertBody } from './notification-content.js';
 
 /**
@@ -26,7 +30,9 @@ import { telegramText, webhookAlertBody } from './notification-content.js';
  * retried with exponential backoff up to `DELIVERY_MAX_ATTEMPTS`.
  */
 @Injectable()
-export class DeliveryWorker implements OnApplicationBootstrap, BeforeApplicationShutdown {
+export class DeliveryWorker
+  implements OnApplicationBootstrap, BeforeApplicationShutdown
+{
   private readonly logger = new Logger(DeliveryWorker.name);
   private readonly policy: RetryPolicy;
   private timer: NodeJS.Timeout | undefined;
@@ -50,7 +56,9 @@ export class DeliveryWorker implements OnApplicationBootstrap, BeforeApplication
   }
 
   onApplicationBootstrap(): void {
-    this.timer = setInterval(() => this.wake(), this.config.DELIVERY_POLL_INTERVAL_MS);
+    this.timer = setInterval(() => {
+      this.wake();
+    }, this.config.DELIVERY_POLL_INTERVAL_MS);
     this.timer.unref();
     this.wake();
   }
@@ -86,7 +94,10 @@ export class DeliveryWorker implements OnApplicationBootstrap, BeforeApplication
   private async drain(): Promise<void> {
     const size = this.config.DELIVERY_BATCH_SIZE;
     while (!this.stopped) {
-      const batch = await this.deliveries.claimDue(size, this.config.DELIVERY_LEASE_MS);
+      const batch = await this.deliveries.claimDue(
+        size,
+        this.config.DELIVERY_LEASE_MS,
+      );
       if (batch.length === 0) return;
       await Promise.all(batch.map((delivery) => this.attempt(delivery)));
       if (batch.length < size) return;
@@ -103,16 +114,28 @@ export class DeliveryWorker implements OnApplicationBootstrap, BeforeApplication
       try {
         result = await this.send(delivery, parsed.data);
       } catch (error) {
-        result = failed(error instanceof Error ? error.message : 'unknown error', false);
+        result = failed(
+          error instanceof Error ? error.message : 'unknown error',
+          false,
+        );
       }
     }
     if (result.outcome !== 'failed') {
-      await this.deliveries.report(delivery.id, delivery.attempts, { status: result.outcome });
-      this.metrics.notificationsSent.inc({ channel: delivery.channel, outcome: result.outcome });
+      await this.deliveries.report(delivery.id, delivery.attempts, {
+        status: result.outcome,
+      });
+      this.metrics.notificationsSent.inc({
+        channel: delivery.channel,
+        outcome: result.outcome,
+      });
       return;
     }
     const decision = planRetry(
-      { attempt: delivery.attempts, permanent: result.permanent, retryAfterMs: result.retryAfterMs },
+      {
+        attempt: delivery.attempts,
+        permanent: result.permanent,
+        retryAfterMs: result.retryAfterMs,
+      },
       this.policy,
       new Date(),
     );
@@ -121,7 +144,11 @@ export class DeliveryWorker implements OnApplicationBootstrap, BeforeApplication
       delivery.attempts,
       decision.status === 'failed'
         ? { status: 'failed', error: result.error }
-        : { status: 'pending', error: result.error, nextAttemptAt: decision.nextAttemptAt },
+        : {
+            status: 'pending',
+            error: result.error,
+            nextAttemptAt: decision.nextAttemptAt,
+          },
     );
     this.metrics.notificationsSent.inc({
       channel: delivery.channel,
@@ -134,13 +161,20 @@ export class DeliveryWorker implements OnApplicationBootstrap, BeforeApplication
         channel: delivery.channel,
         attempt: delivery.attempts,
         error: result.error,
-        ...(decision.status === 'pending' ? { nextAttemptAt: decision.nextAttemptAt } : {}),
+        ...(decision.status === 'pending'
+          ? { nextAttemptAt: decision.nextAttemptAt }
+          : {}),
       },
-      decision.status === 'failed' ? 'Delivery failed for good' : 'Delivery attempt failed, retrying',
+      decision.status === 'failed'
+        ? 'Delivery failed for good'
+        : 'Delivery attempt failed, retrying',
     );
   }
 
-  private send(delivery: Delivery, payload: DeliveryPayload): Promise<ChannelResult> {
+  private send(
+    delivery: Delivery,
+    payload: DeliveryPayload,
+  ): Promise<ChannelResult> {
     switch (delivery.channel) {
       case 'email':
         return this.email.queueAlert(delivery.id, delivery.target, payload);

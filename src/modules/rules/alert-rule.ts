@@ -43,6 +43,16 @@ export interface AlertRuleFields {
   readonly enabled: boolean;
 }
 
+/**
+ * Changes of a rule (`PATCH /alert-rules/:id`): an absent or `undefined`
+ * field keeps its value (validated DTOs carry their unset fields as
+ * `undefined`).
+ */
+export type AlertRuleChanges = {
+  readonly [Field in keyof AlertRuleFields]?:
+    AlertRuleFields[Field] | undefined;
+};
+
 /** Which organizations' rules a principal manages (tenant-private, spec §8.5). */
 export type RuleTenancy =
   { readonly kind: 'all' } | { readonly kind: 'org'; readonly orgId: string };
@@ -55,8 +65,11 @@ export interface AlertRuleFilter {
 
 /** Platform administrators manage every organization's rules, others their active one's. */
 export function ruleTenancyOf(principal: Principal): RuleTenancy | null {
-  if (principal.kind === 'user' && principal.isPlatformAdmin) return { kind: 'all' };
-  return principal.orgId === null ? null : { kind: 'org', orgId: principal.orgId };
+  if (principal.kind === 'user' && principal.isPlatformAdmin)
+    return { kind: 'all' };
+  return principal.orgId === null
+    ? null
+    : { kind: 'org', orgId: principal.orgId };
 }
 
 /**

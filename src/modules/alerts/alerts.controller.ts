@@ -1,4 +1,8 @@
-import { CurrentPrincipal, type Principal, RequirePermissions } from '@darmawanweb/ais-its-nest/auth';
+import {
+  CurrentPrincipal,
+  type Principal,
+  RequirePermissions,
+} from '@darmawanweb/ais-its-nest/auth';
 import { decodeQueryCursor } from '@darmawanweb/ais-its-nest/http';
 import { ValidationFailedError } from '@darmawanweb/ais-its-nest';
 import {
@@ -21,7 +25,10 @@ import { AlertsService } from './alerts.service.js';
 import { AlertDto, AlertPageDto, AlertSummaryDto } from './dto/alert.dto.js';
 import { ListAlertsQuery } from './dto/list-alerts.query.js';
 
-const AlertCursorSchema = z.object({ occurredAt: z.iso.datetime(), id: z.uuid() });
+const AlertCursorSchema = z.object({
+  occurredAt: z.iso.datetime(),
+  id: z.uuid(),
+});
 
 /** The filter of a list query (`to` defaults to now; `from` has no default). */
 function filterOf(query: ListAlertsQuery, now: Date): AlertFilter {
@@ -29,7 +36,11 @@ function filterOf(query: ListAlertsQuery, now: Date): AlertFilter {
   const to = query.to === undefined ? now : new Date(query.to);
   if (from !== undefined && from > to) {
     throw new ValidationFailedError([
-      { field: 'from', message: 'from must not be after to', code: 'timeRange' },
+      {
+        field: 'from',
+        message: 'from must not be after to',
+        code: 'timeRange',
+      },
     ]);
   }
   return {
@@ -64,7 +75,12 @@ export class AlertsController {
   ): Promise<AlertPageDto> {
     const after = decodeQueryCursor(query, AlertCursorSchema);
     return new AlertPageDto(
-      await this.alerts.list(filterOf(query, new Date()), after, query.limit, principal),
+      await this.alerts.list(
+        filterOf(query, new Date()),
+        after,
+        query.limit,
+        principal,
+      ),
     );
   }
 
@@ -72,7 +88,9 @@ export class AlertsController {
   @RequirePermissions('alert:read')
   @ApiOperation({ summary: 'Open alert counts by severity, domain and type' })
   @ApiOkResponse({ type: AlertSummaryDto })
-  async summary(@CurrentPrincipal() principal: Principal): Promise<AlertSummaryDto> {
+  async summary(
+    @CurrentPrincipal() principal: Principal,
+  ): Promise<AlertSummaryDto> {
     return new AlertSummaryDto(await this.alerts.summary(principal));
   }
 
@@ -90,7 +108,9 @@ export class AlertsController {
   @Post(':id/ack')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions('alert:ack')
-  @ApiOperation({ summary: 'Acknowledge an alert (idempotent; 409 when resolved)' })
+  @ApiOperation({
+    summary: 'Acknowledge an alert (idempotent; 409 when resolved)',
+  })
   @ApiOkResponse({ type: AlertDto })
   async acknowledge(
     @Param('id', new ParseUUIDPipe()) id: string,

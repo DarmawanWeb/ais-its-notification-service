@@ -1,7 +1,10 @@
 import type { CursorPage } from '@darmawanweb/ais-its-contracts/api';
 import { REALTIME_SERVER_EVENTS } from '@darmawanweb/ais-its-contracts/realtime';
 import { ConflictError, DomainError } from '@darmawanweb/ais-its-nest';
-import { type AuditRequest, AuditService } from '@darmawanweb/ais-its-nest/audit';
+import {
+  type AuditRequest,
+  AuditService,
+} from '@darmawanweb/ais-its-nest/audit';
 import type { Principal } from '@darmawanweb/ais-its-nest/auth';
 import { cursorPage } from '@darmawanweb/ais-its-nest/http';
 import { Injectable, Logger } from '@nestjs/common';
@@ -46,7 +49,12 @@ export class AlertsService {
     limit: number,
     principal: Principal,
   ): Promise<CursorPage<InboxAlert>> {
-    const rows = await this.alerts.list(filter, alertScopeOf(principal), after, limit + 1);
+    const rows = await this.alerts.list(
+      filter,
+      alertScopeOf(principal),
+      after,
+      limit + 1,
+    );
     return cursorPage(rows, limit, (row) => ({
       occurredAt: row.occurredAt.toISOString(),
       id: row.id,
@@ -66,12 +74,20 @@ export class AlertsService {
   }
 
   /** `POST /alerts/:id/ack`: open → acknowledged (idempotent). */
-  acknowledge(id: string, principal: Principal, request?: AuditRequest): Promise<InboxAlert> {
+  acknowledge(
+    id: string,
+    principal: Principal,
+    request?: AuditRequest,
+  ): Promise<InboxAlert> {
     return this.act(id, 'acknowledge', principal, request);
   }
 
   /** `POST /alerts/:id/resolve`: open / acknowledged → resolved (idempotent). */
-  resolve(id: string, principal: Principal, request?: AuditRequest): Promise<InboxAlert> {
+  resolve(
+    id: string,
+    principal: Principal,
+    request?: AuditRequest,
+  ): Promise<InboxAlert> {
     return this.act(id, 'resolve', principal, request);
   }
 
@@ -83,22 +99,35 @@ export class AlertsService {
   ): Promise<InboxAlert> {
     for (let attempt = 1; ; attempt += 1) {
       const current = await this.get(id, principal);
-      const transition = transitionAlert(current, action, principal.id, new Date());
+      const transition = transitionAlert(
+        current,
+        action,
+        principal.id,
+        new Date(),
+      );
       if ('rejected' in transition) {
-        throw new ConflictError(`Alert ${id} is resolved and cannot be acknowledged`, {
-          code: transition.rejected,
-          extra: { id, status: current.status },
-        });
+        throw new ConflictError(
+          `Alert ${id} is resolved and cannot be acknowledged`,
+          {
+            code: transition.rejected,
+            extra: { id, status: current.status },
+          },
+        );
       }
       if (!transition.changed) return current;
-      const updated = await this.alerts.updateLifecycle(current, transition.lifecycle);
+      const updated = await this.alerts.updateLifecycle(
+        current,
+        transition.lifecycle,
+      );
       if (updated !== undefined) {
         await this.afterChange(updated, action, principal, request);
         return updated;
       }
       // The status changed meanwhile (a merge reopened it, another user acted): re-read.
       if (attempt >= ACTION_ATTEMPTS) {
-        throw new ConflictError(`Alert ${id} changed concurrently, retry`, { code: 'CONFLICT' });
+        throw new ConflictError(`Alert ${id} changed concurrently, retry`, {
+          code: 'CONFLICT',
+        });
       }
     }
   }
@@ -111,7 +140,8 @@ export class AlertsService {
   ): Promise<void> {
     await this.audit.record(
       {
-        action: action === 'acknowledge' ? 'alert.acknowledge' : 'alert.resolve',
+        action:
+          action === 'acknowledge' ? 'alert.acknowledge' : 'alert.resolve',
         targetType: 'alert',
         targetId: alert.id,
         orgId: alert.orgId,
@@ -121,12 +151,18 @@ export class AlertsService {
       request,
     );
     try {
-      const mmsis = alert.relatedMmsi === null ? [alert.mmsi] : [alert.mmsi, alert.relatedMmsi];
+      const mmsis =
+        alert.relatedMmsi === null
+          ? [alert.mmsi]
+          : [alert.mmsi, alert.relatedMmsi];
       const owners = await this.vessels.ownersOf(mmsis);
       this.broadcaster.publish(
         REALTIME_SERVER_EVENTS.ALERT_UPDATED,
         toRealtimeAlert(alert),
-        alertRooms([alert.orgId, ...[...owners.values()].map((owner) => owner.orgId)]),
+        alertRooms([
+          alert.orgId,
+          ...[...owners.values()].map((owner) => owner.orgId),
+        ]),
       );
     } catch (error) {
       this.logger.warn({ err: error, alertId: alert.id }, 'Alert push failed');
@@ -135,5 +171,8 @@ export class AlertsService {
 }
 
 function alertNotFound(id: string): DomainError {
-  return new DomainError('ALERT_NOT_FOUND', { detail: `No alert with id ${id}`, extra: { id } });
+  return new DomainError('ALERT_NOT_FOUND', {
+    detail: `No alert with id ${id}`,
+    extra: { id },
+  });
 }

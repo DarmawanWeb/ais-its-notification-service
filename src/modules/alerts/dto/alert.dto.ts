@@ -14,16 +14,25 @@ import type { AlertSummary, InboxAlert } from '../alert.js';
 
 /** An alert of the inbox on the wire. */
 export class AlertDto {
-  @ApiProperty({ format: 'uuid', description: 'Alert id (the first occurrence)' })
+  @ApiProperty({
+    format: 'uuid',
+    description: 'Alert id (the first occurrence)',
+  })
   readonly id: string;
 
-  @ApiProperty({ example: 'ews', description: 'Alert type (registry ALERT_TYPES; future types possible)' })
+  @ApiProperty({
+    example: 'ews',
+    description: 'Alert type (registry ALERT_TYPES; future types possible)',
+  })
   readonly type: string;
 
   @ApiProperty({ enum: ALERT_DOMAINS })
   readonly domain: AlertDomain;
 
-  @ApiProperty({ enum: ALERT_SEVERITIES, description: 'Highest severity of the merged occurrences' })
+  @ApiProperty({
+    enum: ALERT_SEVERITIES,
+    description: 'Highest severity of the merged occurrences',
+  })
   readonly severity: AlertSeverity;
 
   @ApiProperty({ enum: ALERT_STATUSES })
@@ -32,10 +41,19 @@ export class AlertDto {
   @ApiProperty({ example: 525005223 })
   readonly mmsi: number;
 
-  @ApiProperty({ type: Number, nullable: true, description: 'Second vessel (collision, transhipment)' })
+  @ApiProperty({
+    type: Number,
+    nullable: true,
+    description: 'Second vessel (collision, transhipment)',
+  })
   readonly relatedMmsi: number | null;
 
-  @ApiProperty({ type: String, format: 'uuid', nullable: true, description: 'Owner of the vessel' })
+  @ApiProperty({
+    type: String,
+    format: 'uuid',
+    nullable: true,
+    description: 'Owner of the vessel',
+  })
   readonly orgId: string | null;
 
   @ApiProperty()
@@ -53,13 +71,23 @@ export class AlertDto {
   @ApiProperty({ type: String, format: 'uuid', nullable: true })
   readonly zoneId: string | null;
 
-  @ApiProperty({ example: 'ews.pipeline_distance_status', description: 'Methodology catalog id (spec §17)' })
+  @ApiProperty({
+    example: 'ews.pipeline_distance_status',
+    description: 'Methodology catalog id (spec §17)',
+  })
   readonly methodId: string;
 
-  @ApiProperty({ example: 'ews:525005223:0f6c…', description: 'Occurrences with this key merge while unresolved' })
+  @ApiProperty({
+    example: 'ews:525005223:0f6c…',
+    description: 'Occurrences with this key merge while unresolved',
+  })
   readonly dedupKey: string;
 
-  @ApiProperty({ type: 'object', additionalProperties: true, description: 'Detector specific details' })
+  @ApiProperty({
+    type: 'object',
+    additionalProperties: true,
+    description: 'Detector specific details',
+  })
   readonly data: Record<string, unknown>;
 
   @ApiProperty({ example: 'safety', description: 'Producing service' })
@@ -179,7 +207,8 @@ export class AlertSummaryDto {
     type: 'object',
     additionalProperties: { type: 'integer' },
     example: { ews: 2, collision: 0, transhipment: 1 },
-    description: 'Every registry type (0 when none) plus any other type present',
+    description:
+      'Every registry type (0 when none) plus any other type present',
   })
   readonly byType: Record<string, number>;
 

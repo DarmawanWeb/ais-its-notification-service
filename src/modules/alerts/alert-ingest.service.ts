@@ -9,13 +9,21 @@ import {
 import { Injectable, Logger } from '@nestjs/common';
 
 import { transactionDatabase } from '../../db/database.js';
-import { type AlertOccurrence, mergeOccurrence } from '../../domain/alert-inbox.js';
+import {
+  type AlertOccurrence,
+  mergeOccurrence,
+} from '../../domain/alert-inbox.js';
 import { NotificationMetrics } from '../../metrics/notification-metrics.js';
 import { DeliveryWorker } from '../deliveries/delivery-worker.service.js';
 import type { DeliveryReason } from '../deliveries/delivery.js';
 import { AlertBroadcaster } from '../realtime/alert-broadcaster.js';
 import { VesselsRepository } from '../vessels/vessels.repository.js';
-import { alertRooms, type InboxAlert, newInboxAlert, toRealtimeAlert } from './alert.js';
+import {
+  alertRooms,
+  type InboxAlert,
+  newInboxAlert,
+  toRealtimeAlert,
+} from './alert.js';
 import { AlertsRepository } from './alerts.repository.js';
 import { DeliveryPlanner } from './delivery-planner.js';
 
@@ -103,20 +111,32 @@ export class AlertIngestService {
     const alert = envelope.data;
     const tx = transactionDatabase(client);
     // Serializes the occurrences of one condition across consumers and instances.
-    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
-      `notify.alert:${alert.dedupKey}`,
-    ]);
-    const mmsis = alert.relatedMmsi === null ? [alert.mmsi] : [alert.mmsi, alert.relatedMmsi];
+    await client.query(
+      'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+      [`notify.alert:${alert.dedupKey}`],
+    );
+    const mmsis =
+      alert.relatedMmsi === null
+        ? [alert.mmsi]
+        : [alert.mmsi, alert.relatedMmsi];
     const owners = await this.vessels.ownersOf(mmsis, tx);
     const vesselOrgId = owners.get(alert.mmsi)?.orgId ?? null;
     const relatedVesselOrgId =
-      alert.relatedMmsi === null ? null : (owners.get(alert.relatedMmsi)?.orgId ?? null);
+      alert.relatedMmsi === null
+        ? null
+        : (owners.get(alert.relatedMmsi)?.orgId ?? null);
 
-    const existing = await this.alerts.findUnresolvedForUpdate(tx, alert.dedupKey);
+    const existing = await this.alerts.findUnresolvedForUpdate(
+      tx,
+      alert.dedupKey,
+    );
     let stored: InboxAlert;
     let outcome: Stored['outcome'];
     if (existing === undefined) {
-      const inserted = await this.alerts.insert(tx, newInboxAlert(alert, envelope.source, vesselOrgId));
+      const inserted = await this.alerts.insert(
+        tx,
+        newInboxAlert(alert, envelope.source, vesselOrgId),
+      );
       // The occurrence was stored before (a replay after the inbox ids were pruned).
       if (inserted === undefined) return undefined;
       stored = inserted;
@@ -125,7 +145,12 @@ export class AlertIngestService {
       // The first occurrence itself, delivered again in another envelope.
       if (existing.id === alert.id) return undefined;
       const merge = mergeOccurrence(existing, occurrenceOf(alert));
-      stored = await this.alerts.updateMerged(tx, existing, merge.alert, vesselOrgId);
+      stored = await this.alerts.updateMerged(
+        tx,
+        existing,
+        merge.alert,
+        vesselOrgId,
+      );
       outcome = merge.escalated ? 'escalated' : 'merged';
     }
     const planned = await this.planner.plan(
@@ -139,7 +164,12 @@ export class AlertIngestService {
       REASONS[outcome],
       new Date(),
     );
-    return { outcome, alert: stored, owners: [vesselOrgId, relatedVesselOrgId], planned };
+    return {
+      outcome,
+      alert: stored,
+      owners: [vesselOrgId, relatedVesselOrgId],
+      planned,
+    };
   }
 
   /** Pushes the change to clients and wakes the delivery worker (best effort). */
@@ -153,7 +183,10 @@ export class AlertIngestService {
         alertRooms(stored.owners),
       );
     } catch (error) {
-      this.logger.warn({ err: error, alertId: stored.alert.id }, 'Alert push failed');
+      this.logger.warn(
+        { err: error, alertId: stored.alert.id },
+        'Alert push failed',
+      );
     }
     if (stored.planned > 0) this.worker.wake();
     this.logger.log(

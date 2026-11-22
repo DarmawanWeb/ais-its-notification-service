@@ -1,8 +1,15 @@
 import { cursorPage } from '@darmawanweb/ais-its-nest/http';
 import type { CursorPage } from '@darmawanweb/ais-its-contracts/api';
-import { type Locale, newId, type NotificationChannel } from '@darmawanweb/ais-its-contracts/domain';
+import {
+  type Locale,
+  newId,
+  type NotificationChannel,
+} from '@darmawanweb/ais-its-contracts/domain';
 import { RateLimitedError } from '@darmawanweb/ais-its-nest';
-import { type AuditRequest, AuditService } from '@darmawanweb/ais-its-nest/audit';
+import {
+  type AuditRequest,
+  AuditService,
+} from '@darmawanweb/ais-its-nest/audit';
 import type { Principal } from '@darmawanweb/ais-its-nest/auth';
 import { Injectable } from '@nestjs/common';
 
@@ -68,15 +75,23 @@ export class NotificationsService {
     principal: Principal,
     request?: AuditRequest,
   ): Promise<TestNotificationResult> {
-    this.policy.assertUsable([{ type: input.channel, target: input.target }], '');
+    this.policy.assertUsable(
+      [{ type: input.channel, target: input.target }],
+      '',
+    );
     const wait = this.throttle.take(principal.id, Date.now());
-    if (wait > 0) throw new RateLimitedError({ retryAfterSeconds: Math.ceil(wait / 1000) });
+    if (wait > 0)
+      throw new RateLimitedError({ retryAfterSeconds: Math.ceil(wait / 1000) });
     const locale = input.locale ?? 'id';
     const result = await this.sendTest(input, locale, principal);
     const outcome = result.outcome === 'failed' ? 'failed' : result.outcome;
     this.metrics.notificationsSent.inc({ channel: input.channel, outcome });
     await this.audit.record(
-      { action: 'notification.test', targetType: 'channel', meta: { channel: input.channel, outcome } },
+      {
+        action: 'notification.test',
+        targetType: 'channel',
+        meta: { channel: input.channel, outcome },
+      },
       principal,
       request,
     );
@@ -95,7 +110,12 @@ export class NotificationsService {
     limit: number,
     principal: Principal,
   ): Promise<CursorPage<Delivery>> {
-    const rows = await this.deliveries.list(filter, requireRuleTenancy(principal), after, limit + 1);
+    const rows = await this.deliveries.list(
+      filter,
+      requireRuleTenancy(principal),
+      after,
+      limit + 1,
+    );
     return cursorPage(rows, limit, (row) => ({
       createdAt: row.createdAt.toISOString(),
       id: row.id,
@@ -109,17 +129,30 @@ export class NotificationsService {
   ): Promise<ChannelResult> {
     switch (input.channel) {
       case 'email':
-        return this.email.queueTest(input.target, locale, requesterOf(principal));
+        return this.email.queueTest(
+          input.target,
+          locale,
+          requesterOf(principal),
+        );
       case 'telegram':
-        return this.telegram.send(input.target, escapeTelegramHtml(testText(locale)));
+        return this.telegram.send(
+          input.target,
+          escapeTelegramHtml(testText(locale)),
+        );
       case 'webhook': {
         const id = newId();
-        return this.webhook.post(input.target, webhookTestBody(id, locale, new Date()), id);
+        return this.webhook.post(
+          input.target,
+          webhookTestBody(id, locale, new Date()),
+          id,
+        );
       }
     }
   }
 }
 
 function requesterOf(principal: Principal): string {
-  return principal.kind === 'user' ? `${principal.name} <${principal.email}>` : principal.id;
+  return principal.kind === 'user'
+    ? `${principal.name} <${principal.email}>`
+    : principal.id;
 }

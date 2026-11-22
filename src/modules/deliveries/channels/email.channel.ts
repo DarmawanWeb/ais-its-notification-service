@@ -22,7 +22,11 @@ export class EmailChannel {
    * id, so a repeated attempt is deduplicated by JetStream and by the e-mail
    * log; the e-mail consumer marks the delivery `sent` or `failed`.
    */
-  async queueAlert(deliveryId: string, to: string, payload: DeliveryPayload): Promise<ChannelResult> {
+  async queueAlert(
+    deliveryId: string,
+    to: string,
+    payload: DeliveryPayload,
+  ): Promise<ChannelResult> {
     return this.publish(
       to,
       payload.locale,
@@ -39,7 +43,11 @@ export class EmailChannel {
   }
 
   /** Queues a test e-mail (`POST /notifications/test`). */
-  async queueTest(to: string, locale: Locale, requestedBy: string): Promise<ChannelResult> {
+  async queueTest(
+    to: string,
+    locale: Locale,
+    requestedBy: string,
+  ): Promise<ChannelResult> {
     return this.publish(to, locale, 'test', { requestedBy }, newId());
   }
 

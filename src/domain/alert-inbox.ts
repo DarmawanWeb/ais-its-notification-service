@@ -81,9 +81,11 @@ export function mergeOccurrence(
   if (current.status === 'resolved') {
     throw new RangeError('A resolved alert does not merge new occurrences');
   }
-  const escalated = compareAlertSeverity(occurrence.severity, current.severity) > 0;
+  const escalated =
+    compareAlertSeverity(occurrence.severity, current.severity) > 0;
   const severity = escalated ? occurrence.severity : current.severity;
-  const newest = occurrence.occurredAt.getTime() >= current.lastOccurredAt.getTime();
+  const newest =
+    occurrence.occurredAt.getTime() >= current.lastOccurredAt.getTime();
   const reopened = escalated && current.status === 'acknowledged';
   const details = newest
     ? {
@@ -137,6 +139,10 @@ export type AlertTransition =
  * acknowledged alert or resolving a resolved one changes nothing); a resolved
  * alert cannot be acknowledged.
  *
+ * Proposed method id (not yet in docs/references/methods.json).
+ *
+ * @method notify.alert_lifecycle
+ * @see ../../../../docs/PLATFORM_SPEC.md §13.9 — `status` open / acknowledged / resolved, `POST /alerts/:id/ack|resolve`
  * @param current - the stored lifecycle fields
  * @param action - `acknowledge` (`POST /alerts/:id/ack`) or `resolve`
  * @param actorId - the user acting
@@ -157,12 +163,23 @@ export function transitionAlert(
     }
     return {
       changed: true,
-      lifecycle: { ...current, status: 'acknowledged', acknowledgedBy: actorId, acknowledgedAt: at },
+      lifecycle: {
+        ...current,
+        status: 'acknowledged',
+        acknowledgedBy: actorId,
+        acknowledgedAt: at,
+      },
     };
   }
-  if (current.status === 'resolved') return { changed: false, lifecycle: current };
+  if (current.status === 'resolved')
+    return { changed: false, lifecycle: current };
   return {
     changed: true,
-    lifecycle: { ...current, status: 'resolved', resolvedBy: actorId, resolvedAt: at },
+    lifecycle: {
+      ...current,
+      status: 'resolved',
+      resolvedBy: actorId,
+      resolvedAt: at,
+    },
   };
 }

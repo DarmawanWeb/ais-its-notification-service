@@ -83,7 +83,9 @@ function formatPosition(lat: number, lon: number): string {
 
 /** `KM Example (525005223)` or the MMSI alone for unregistered vessels. */
 export function vesselLabel(mmsi: number, name: string | null): string {
-  return name === null || name.trim() === '' ? String(mmsi) : `${name} (${mmsi})`;
+  return name === null || name.trim() === ''
+    ? String(mmsi)
+    : `${name} (${mmsi})`;
 }
 
 /**
@@ -109,18 +111,32 @@ export function buildAlertMessage(
       ? []
       : [{ label: labels.relatedVessel, value: String(alert.relatedMmsi) }]),
     { label: labels.severity, value: severity },
-    { label: labels.domain, value: alertDomainLabel(alert.domain, context.locale) },
-    { label: labels.status, value: STATUS_LABELS[context.locale][alert.status] },
+    {
+      label: labels.domain,
+      value: alertDomainLabel(alert.domain, context.locale),
+    },
+    {
+      label: labels.status,
+      value: STATUS_LABELS[context.locale][alert.status],
+    },
     { label: labels.occurredAt, value: formatUtc(alert.occurredAt) },
     ...(alert.occurrences > 1
       ? [
-          { label: labels.lastOccurredAt, value: formatUtc(alert.lastOccurredAt) },
+          {
+            label: labels.lastOccurredAt,
+            value: formatUtc(alert.lastOccurredAt),
+          },
           { label: labels.occurrences, value: String(alert.occurrences) },
         ]
       : []),
     ...(alert.lat === null || alert.lon === null
       ? []
-      : [{ label: labels.position, value: formatPosition(alert.lat, alert.lon) }]),
+      : [
+          {
+            label: labels.position,
+            value: formatPosition(alert.lat, alert.lon),
+          },
+        ]),
     {
       label: labels.method,
       value:
@@ -128,7 +144,9 @@ export function buildAlertMessage(
           ? alert.methodId
           : `${method.name[context.locale]} (${alert.methodId})`,
     },
-    ...(context.ruleName === null ? [] : [{ label: labels.rule, value: context.ruleName }]),
+    ...(context.ruleName === null
+      ? []
+      : [{ label: labels.rule, value: context.ruleName }]),
   ];
   return {
     subject: `[${severity}] ${type} — ${vessel}`,

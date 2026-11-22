@@ -3,6 +3,7 @@ import { type Database, InjectDb } from '@darmawanweb/ais-its-nest/db';
 import { Injectable } from '@nestjs/common';
 import { and, eq, inArray, lte, ne, sql } from 'drizzle-orm';
 
+import { isUniqueViolation } from '../../db/errors.js';
 import * as schema from '../../db/schema.js';
 
 const { vessels } = schema;
@@ -24,11 +25,22 @@ export class VesselsRepository {
 
   /**
    * Stores a snapshot unless a newer one is stored. A vessel that took over
-   * the MMSI of an older (deleted or re-registered) vessel replaces it.
+   * the MMSI of an older (deleted or re-registered) vessel replaces it; a
+   * stale snapshot whose MMSI belongs to a newer vessel by now is ignored
+   * (fleet keeps MMSIs unique, so the newer vessel wins).
    *
-   * @returns `false` when the stored snapshot is newer
+   * @returns `false` when the snapshot is older than the stored state
    */
   async upsert(snapshot: VesselSnapshotV1): Promise<boolean> {
+    try {
+      return await this.write(snapshot);
+    } catch (error) {
+      if (isUniqueViolation(error, 'vessels_mmsi_key')) return false;
+      throw error;
+    }
+  }
+
+  private write(snapshot: VesselSnapshotV1): Promise<boolean> {
     const updatedAt = new Date(snapshot.updatedAt);
     return this.db.transaction(async (tx) => {
       await tx

@@ -50,7 +50,9 @@ export class VesselLiveState {
   /** @param maxVessels - capacity (≥ 1) */
   constructor(private readonly maxVessels: number) {
     if (!Number.isInteger(maxVessels) || maxVessels < 1) {
-      throw new RangeError(`maxVessels must be a positive integer, got ${maxVessels}`);
+      throw new RangeError(
+        `maxVessels must be a positive integer, got ${maxVessels}`,
+      );
     }
   }
 
@@ -67,7 +69,10 @@ export class VesselLiveState {
    */
   applyPosition(position: RealtimePosition): PositionUpdate | null {
     const vessel = this.touch(position.mmsi);
-    if (vessel.position !== null && Date.parse(position.time) <= Date.parse(vessel.position.time)) {
+    if (
+      vessel.position !== null &&
+      Date.parse(position.time) <= Date.parse(vessel.position.time)
+    ) {
       return null;
     }
     const room = tileRoomForPosition(position.lon, position.lat);
@@ -89,14 +94,20 @@ export class VesselLiveState {
    */
   applySafety(state: SafetyVesselStateV1): SafetyUpdate | null {
     const vessel = this.touch(state.mmsi);
-    if (vessel.safety !== null && Date.parse(state.time) < Date.parse(vessel.safety.time)) {
+    if (
+      vessel.safety !== null &&
+      Date.parse(state.time) < Date.parse(vessel.safety.time)
+    ) {
       return null;
     }
     vessel.safety = state;
     if (vessel.position === null || vessel.room === null) {
       return { state: null, room: null };
     }
-    return { state: toRealtimeSafetyState(state, vessel.position), room: vessel.room };
+    return {
+      state: toRealtimeSafetyState(state, vessel.position),
+      room: vessel.room,
+    };
   }
 
   /** The latest position and safety state of a vessel (`vessel:subscribe`). */

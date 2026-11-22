@@ -5,7 +5,10 @@ import { IsBoolean, IsOptional, IsUUID } from 'class-validator';
 
 /** Query of `GET /alert-rules` (page-based list, spec §5). */
 export class ListAlertRulesQuery extends PageQueryDto {
-  @ApiPropertyOptional({ format: 'uuid', description: 'Organization (super_admin; others: their own)' })
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description: 'Organization (super_admin; others: their own)',
+  })
   @IsOptional()
   @IsUUID()
   readonly orgId?: string;

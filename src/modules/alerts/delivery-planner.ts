@@ -14,7 +14,10 @@ import {
   type Executor,
   type NewDelivery,
 } from '../deliveries/deliveries.repository.js';
-import type { DeliveryPayload, DeliveryReason } from '../deliveries/delivery.js';
+import type {
+  DeliveryPayload,
+  DeliveryReason,
+} from '../deliveries/delivery.js';
 import { AlertRulesRepository } from '../rules/alert-rules.repository.js';
 import { type InboxAlert, toRealtimeAlert } from './alert.js';
 
@@ -62,8 +65,8 @@ export class DeliveryPlanner {
       vesselOrgId: vessels.vesselOrgId,
       relatedVesselOrgId: vessels.relatedVesselOrgId,
     };
-    const matching = (await this.rules.candidates(executor, owners)).filter((rule) =>
-      ruleMatchesAlert(rule, facts),
+    const matching = (await this.rules.candidates(executor, owners)).filter(
+      (rule) => ruleMatchesAlert(rule, facts),
     );
     if (matching.length === 0) return 0;
     const last = await this.deliveries.lastNotifications(
@@ -75,7 +78,14 @@ export class DeliveryPlanner {
     const link = alertLink(this.config.PUBLIC_BASE_URL, alert.id);
     const rows: NewDelivery[] = [];
     for (const rule of matching) {
-      if (isWithinQuietPeriod(rule.quietMinutes, last.get(rule.id), alert.severity, now)) {
+      if (
+        isWithinQuietPeriod(
+          rule.quietMinutes,
+          last.get(rule.id),
+          alert.severity,
+          now,
+        )
+      ) {
         continue;
       }
       const payload: DeliveryPayload = {
