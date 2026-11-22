@@ -926,7 +926,7 @@
               "org",
               "all"
             ],
-            "description": "org: vessels of the organization; all: every vessel (authority and super_admin only). Default all for authority principals, else org."
+            "description": "org: vessels of the organization; all: every vessel (only rules of an authority organization, written by its authority members). Default all for those, else org."
           },
           "types": {
             "example": [
@@ -1220,7 +1220,7 @@
               "org",
               "all"
             ],
-            "description": "org: vessels of the organization; all: every vessel (authority and super_admin only). Default all for authority principals, else org."
+            "description": "org: vessels of the organization; all: every vessel (only rules of an authority organization, written by its authority members). Default all for those, else org."
           },
           "types": {
             "example": [

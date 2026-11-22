@@ -68,9 +68,17 @@ export const configSchema = defineConfig({
   DELIVERY_RETRY_MAX_MS: envInteger(10, 86_400_000).default(3_600_000),
   /** How often due deliveries are polled (new alerts also wake the worker), ms. */
   DELIVERY_POLL_INTERVAL_MS: envInteger(50, 60_000).default(1_000),
-  /** Deliveries claimed per poll. */
-  DELIVERY_BATCH_SIZE: envInteger(1, 500).default(20),
-  /** Lease of a claimed delivery: after it, a crashed attempt is retried by any instance, ms. */
+  /**
+   * Delivery attempts in flight per instance: claims fill the free slots, so
+   * a slow receiver holds one slot (at most its channel timeout), never the
+   * others.
+   */
+  DELIVERY_CONCURRENCY: envInteger(1, 500).default(20),
+  /**
+   * Lease of a claimed delivery: after it, a crashed attempt is retried by any
+   * instance, ms. At least twice the longest channel timeout, so a live
+   * attempt is never claimed (and sent) twice.
+   */
   DELIVERY_LEASE_MS: envInteger(1_000, 3_600_000).default(120_000),
 
   // --- Realtime gateway (spec §9) --------------------------------------------
@@ -97,6 +105,18 @@ export const configSchema = defineConfig({
   IDEMPOTENCY_RETENTION_DAYS: envInteger(1, 3_650).default(90),
   /** Finished deliveries and e-mail log rows kept, days. */
   NOTIFICATION_LOG_RETENTION_DAYS: envInteger(1, 3_650).default(180),
+}).superRefine((env, ctx) => {
+  const longestAttemptMs = Math.max(
+    env.WEBHOOK_TIMEOUT_MS,
+    env.TELEGRAM_TIMEOUT_MS,
+  );
+  if (env.DELIVERY_LEASE_MS < 2 * longestAttemptMs) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['DELIVERY_LEASE_MS'],
+      message: `must be at least twice the longest channel timeout (${2 * longestAttemptMs} ms)`,
+    });
+  }
 });
 
 /** Validated configuration; inject it with `@InjectConfig() config: Config`. */

@@ -9,8 +9,12 @@ import type { DefaultEventsMap, Server, Socket } from 'socket.io';
 export interface RealtimeSocketData {
   /** The authenticated user (handshake access token). */
   principal: UserPrincipal;
-  /** Tile rooms (or `tile:all`) of the current viewport. */
-  viewportRooms: Set<string>;
+  /**
+   * Tail of the connection's room changes (`viewport:set`,
+   * `vessel:subscribe` / `vessel:unsubscribe`): each change starts when the
+   * previous one finished, in the order the client sent them.
+   */
+  roomChanges: Promise<void>;
   /** Vessel rooms joined with `vessel:subscribe`. */
   vessels: Set<number>;
   /** Re-authentication timer at token expiry. */

@@ -4,6 +4,7 @@ import { Injectable } from '@nestjs/common';
 import { and, count, desc, eq, inArray, or, type SQL, sql } from 'drizzle-orm';
 
 import * as schema from '../../db/schema.js';
+import type { RuleScope } from '../../domain/alert-rules.js';
 import type {
   AlertRule,
   AlertRuleChanges,
@@ -113,15 +114,28 @@ export class AlertRulesRepository {
     return { rows, total: totals[0]?.total ?? 0 };
   }
 
+  /**
+   * Applies `changes` while the rule still has `expectedScope` (the scope its
+   * authorization was checked against).
+   *
+   * @returns the updated rule, `undefined` when it is gone or its scope changed
+   */
   async update(
     id: string,
     tenancy: RuleTenancy,
+    expectedScope: RuleScope,
     changes: AlertRuleChanges,
   ): Promise<AlertRule | undefined> {
     const [row] = await this.db
       .update(alertRules)
       .set({ ...toColumns(changes), updatedAt: sql`now()` })
-      .where(and(eq(alertRules.id, id), tenancyCondition(tenancy)))
+      .where(
+        and(
+          eq(alertRules.id, id),
+          tenancyCondition(tenancy),
+          eq(alertRules.scope, expectedScope),
+        ),
+      )
       .returning();
     return row;
   }

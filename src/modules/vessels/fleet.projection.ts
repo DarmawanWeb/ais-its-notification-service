@@ -9,8 +9,9 @@ import { VesselsRepository } from './vessels.repository.js';
 
 /**
  * Durable consumer `notification-fleet` (spec §7.3): projects vessel
- * snapshots into `vessels`. Idempotent: a snapshot never overwrites a newer
- * one, deletions are naturally repeatable.
+ * snapshots into `vessels`. Idempotent under redelivery in any order: a
+ * snapshot never overwrites a newer one, and a deletion leaves a tombstone
+ * that every later (redelivered) snapshot of the vessel respects.
  */
 @Injectable()
 export class FleetProjection {
@@ -30,7 +31,7 @@ export class FleetProjection {
         );
       }
     } else if (event.type === EVENT_TYPES.FLEET_VESSEL_DELETED) {
-      await this.vessels.delete(event.data.id);
+      await this.vessels.markDeleted(event.data, new Date(event.time));
     }
   }
 }

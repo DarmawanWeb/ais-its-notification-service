@@ -11,7 +11,11 @@ import { EmailService } from './email.service.js';
 /**
  * Durable consumer `notification-email` on the `NOTIFY` work queue (spec
  * §7.3): password resets and invitations from auth, alert and test e-mails
- * from this service. SMTP can be slow, hence the longer ack wait.
+ * from this service. SMTP can be slow, hence the longer ack wait. Every
+ * request has the same subject (`notify.email.v1`) and e-mails need no
+ * order (idempotency comes from `email_log`), so per-subject ordering is off:
+ * up to four e-mails are sent at once and one slow SMTP exchange does not
+ * hold the password resets queued behind it.
  */
 @Injectable()
 export class EmailConsumer {
@@ -20,6 +24,7 @@ export class EmailConsumer {
   @EventHandler({
     consumer: 'notification-email',
     concurrency: 4,
+    orderBySubject: false,
     ackWaitMs: 60_000,
   })
   async onEmailRequested(

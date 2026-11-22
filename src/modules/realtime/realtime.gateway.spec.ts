@@ -39,7 +39,7 @@ function gatewayWith(verify: (token: string) => Promise<UserPrincipal>) {
   const metrics = fakeMetrics();
   const gateway = new RealtimeGateway(
     { verify } as unknown as AccessTokenVerifier,
-    { attach: vi.fn() } as unknown as RealtimeHub,
+    { attach: vi.fn(), sendSnapshot: vi.fn() } as unknown as RealtimeHub,
     metrics as unknown as NotificationMetrics,
     {
       REALTIME_REAUTH_ON_TOKEN_EXPIRY: false,
@@ -80,7 +80,67 @@ function fakeSocket(auth: unknown, join = vi.fn()): RealtimeSocket {
   } as unknown as RealtimeSocket;
 }
 
+/**
+ * A connected socket whose room changes complete asynchronously (as with an
+ * adapter that awaits them), recording the rooms it is in.
+ */
+function roomSocket(): RealtimeSocket & { rooms: Set<string> } {
+  const rooms = new Set<string>(['socket-1']);
+  const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+  return {
+    id: 'socket-1',
+    connected: true,
+    rooms,
+    data: {
+      principal: principal(['viewer'], ORG),
+      roomChanges: Promise.resolve(),
+      vessels: new Set<number>(),
+      expiryTimer: undefined,
+    },
+    join: async (joined: string | string[]) => {
+      await tick();
+      for (const room of [joined].flat()) rooms.add(room);
+    },
+    leave: async (room: string) => {
+      await tick();
+      rooms.delete(room);
+    },
+  } as unknown as RealtimeSocket & { rooms: Set<string> };
+}
+
 describe('RealtimeGateway', () => {
+  it('applies viewport:set requests sent back to back in order (map panning)', async () => {
+    const { gateway } = gatewayWith(() => Promise.reject(new Error('unused')));
+    const socket = roomSocket();
+
+    // The whole world (tile:all), then one tile off Surabaya, without waiting.
+    const acks = await Promise.all([
+      gateway.onViewportSet(socket, { bbox: [-180, -85, 180, 85], zoom: 2 }),
+      gateway.onViewportSet(socket, { bbox: [112.5, -7.5, 113, -7], zoom: 9 }),
+    ]);
+
+    expect(acks).toEqual([
+      { ok: true, data: { mode: 'all', tileCount: 0 } },
+      { ok: true, data: { mode: 'tiles', tileCount: 1 } },
+    ]);
+    expect(
+      [...socket.rooms].filter((room) => room.startsWith('tile:')),
+    ).toEqual(['tile:6:52:33']);
+  });
+
+  it('keeps subscribe / unsubscribe of a vessel in order', async () => {
+    const { gateway } = gatewayWith(() => Promise.reject(new Error('unused')));
+    const socket = roomSocket();
+
+    await Promise.all([
+      gateway.onVesselSubscribe(socket, { mmsi: 525005223 }),
+      gateway.onVesselUnsubscribe(socket, { mmsi: 525005223 }),
+    ]);
+
+    expect(socket.rooms.has('vessel:525005223')).toBe(false);
+    expect(socket.data.vessels.size).toBe(0);
+  });
+
   it('authenticates the handshake token and prepares the connection state', async () => {
     const user = principal(['viewer'], ORG);
     const verify = vi.fn((_token: string) => Promise.resolve(user));
@@ -91,7 +151,7 @@ describe('RealtimeGateway', () => {
     expect(error).toBeUndefined();
     expect(verify).toHaveBeenCalledWith('valid-token');
     expect(socket.data.principal).toBe(user);
-    expect(socket.data.viewportRooms.size).toBe(0);
+    await expect(socket.data.roomChanges).resolves.toBeUndefined();
     expect(socket.data.vessels.size).toBe(0);
   });
 
@@ -135,7 +195,7 @@ describe('RealtimeGateway', () => {
       const socket = fakeSocket(undefined, join);
       socket.data = {
         principal: principal([...roles], orgId),
-        viewportRooms: new Set(),
+        roomChanges: Promise.resolve(),
         vessels: new Set(),
         expiryTimer: undefined,
       };

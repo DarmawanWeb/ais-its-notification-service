@@ -167,3 +167,67 @@ export class MailpitClient {
     return response.json();
   }
 }
+
+/** A local receiver that misbehaves on purpose (slow webhook targets). */
+export interface SlowServer {
+  /** `http://127.0.0.1:<port>`. */
+  readonly url: string;
+  /** Requests received so far. */
+  readonly received: () => number;
+  /** How long each connection stayed open, ms (closed ones only). */
+  readonly connectionLifetimesMs: readonly number[];
+  close(): Promise<void>;
+}
+
+/**
+ * Starts a receiver that never answers (`stall`) or answers 200 at once and
+ * then drips its body one byte every 400 ms for a minute (`drip`).
+ */
+export async function startSlowServer(
+  mode: 'stall' | 'drip',
+): Promise<SlowServer> {
+  let received = 0;
+  const lifetimes: number[] = [];
+  const timers = new Set<NodeJS.Timeout>();
+  const server = createServer((request, response) => {
+    received += 1;
+    const openedAt = Date.now();
+    response.on('close', () => {
+      lifetimes.push(Date.now() - openedAt);
+    });
+    request.resume();
+    if (mode === 'stall') return;
+    response.writeHead(200, { 'content-type': 'text/plain' });
+    response.flushHeaders();
+    let sent = 0;
+    const timer = setInterval(() => {
+      sent += 1;
+      if (sent > 150) {
+        clearInterval(timer);
+        response.end();
+      } else {
+        response.write('.');
+      }
+    }, 400);
+    timers.add(timer);
+    response.on('close', () => {
+      clearInterval(timer);
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  return {
+    url: `http://127.0.0.1:${port}`,
+    received: () => received,
+    connectionLifetimesMs: lifetimes,
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        for (const timer of timers) clearInterval(timer);
+        server.closeAllConnections();
+        server.close((error) => {
+          if (error === undefined) resolve();
+          else reject(error);
+        });
+      }),
+  };
+}

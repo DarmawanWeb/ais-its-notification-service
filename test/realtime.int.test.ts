@@ -263,6 +263,41 @@ describe('realtime gateway at /ws (spec §9)', () => {
     );
   });
 
+  it('leaves tile:all when viewports are sent back to back (map panning)', async () => {
+    const client = await connect({ roles: ['viewer'], orgId: orgA });
+    // The whole world, then one tile off Surabaya, without waiting for the first ack.
+    const acks = await Promise.all([
+      request(client, 'viewport:set', { bbox: [-180, -85, 180, 85], zoom: 2 }),
+      request(client, 'viewport:set', { bbox: VIEWPORT, zoom: 9 }),
+    ]);
+    expect(acks).toEqual([
+      { ok: true, data: { mode: 'all', tileCount: 0 } },
+      {
+        ok: true,
+        data: {
+          mode: 'tiles',
+          tileCount: roomsForViewport(VIEWPORT).rooms.length,
+        },
+      },
+    ]);
+
+    // A vessel in the North Sea: only tile:all would carry it.
+    const northSea = uniqueMmsi();
+    const inside = uniqueMmsi();
+    await service.publisher.publishEvent(
+      EVENT_TYPES.AIS_POSITION_RECORDED,
+      positionEvent(northSea, 3.5, 55.2),
+    );
+    await service.publisher.publishEvent(
+      EVENT_TYPES.AIS_POSITION_RECORDED,
+      positionEvent(inside, 112.7, -7.2),
+    );
+    await nextEvent(client, 'positions', batchWith(inside));
+    // Several tile:all windows (500 ms here) later, still nothing from tile:all.
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    expect(received(client, 'positions').some(batchWith(northSea))).toBe(false);
+  });
+
   it('pushes vessel:position and vessel:safety to vessel rooms immediately', async () => {
     const client = await connect({ roles: ['viewer'], orgId: orgA });
     const mmsi = uniqueMmsi();

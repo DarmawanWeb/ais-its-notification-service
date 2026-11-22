@@ -22,7 +22,6 @@ describe('html', () => {
   it('nests fragments built with the tag without escaping them twice', () => {
     const items = ['a&b', 'c'].map((item) => html`<li>${item}</li>`);
 
-    // prettier-ignore
     const list = html`<ul>${items}</ul>`;
 
     expect(list.value).toBe('<ul><li>a&amp;b</li><li>c</li></ul>');

@@ -2,6 +2,7 @@
 // The SQL files in migrations/ create the tables; these definitions MUST
 // mirror them and only type the queries.
 import type { NotificationChannel } from '@darmawanweb/ais-its-contracts/domain';
+import { sql } from 'drizzle-orm';
 import * as pg from 'drizzle-orm/pg-core';
 
 /** The service's PostgreSQL schema, owned by the role `notify_svc`. */
@@ -10,7 +11,11 @@ export const serviceSchema = pg.pgSchema('notify');
 const timestamptz = (name: string) =>
   pg.timestamp(name, { withTimezone: true });
 
-/** Projection of the `FLEET` stream: mmsi → owner organization (`0001_init.sql`). */
+/**
+ * Projection of the `FLEET` stream: mmsi → owner organization
+ * (`0001_init.sql`); deleted vessels stay as tombstones with `deleted_at`
+ * and take no part in mmsi uniqueness (`0002_review_hardening.sql`).
+ */
 export const vessels = serviceSchema.table(
   'vessels',
   {
@@ -20,9 +25,13 @@ export const vessels = serviceSchema.table(
     name: pg.text('name').notNull(),
     updatedAt: timestamptz('updated_at').notNull(),
     projectedAt: timestamptz('projected_at').notNull().defaultNow(),
+    deletedAt: timestamptz('deleted_at'),
   },
   (table) => [
-    pg.unique('vessels_mmsi_key').on(table.mmsi),
+    pg
+      .uniqueIndex('vessels_mmsi_key')
+      .on(table.mmsi)
+      .where(sql`${table.deletedAt} IS NULL`),
     pg.index('vessels_org_idx').on(table.orgId),
   ],
 );
@@ -66,6 +75,23 @@ export const alerts = serviceSchema.table(
     updatedAt: timestamptz('updated_at').notNull().defaultNow(),
   },
   (table) => [pg.primaryKey({ columns: [table.id, table.occurredAt] })],
+);
+
+/**
+ * The unresolved inbox alert of each dedup key, a regular table beside the
+ * hypertable so the merge lookup never searches or locks compressed chunks
+ * (`0002_review_hardening.sql`).
+ */
+export const openAlerts = serviceSchema.table(
+  'open_alerts',
+  {
+    dedupKey: pg.text('dedup_key').primaryKey(),
+    alertId: pg.uuid('alert_id').notNull(),
+    occurredAt: timestamptz('occurred_at').notNull(),
+    mmsi: pg.integer('mmsi').notNull(),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (table) => [pg.index('open_alerts_occurred_idx').on(table.occurredAt)],
 );
 
 /** One channel of an alert rule (`alert_rules.channels`). */
@@ -147,11 +173,15 @@ export const deliveries = serviceSchema.table(
       .index('deliveries_rule_alert_idx')
       .on(table.ruleId, table.alertId, table.createdAt),
     pg.index('deliveries_alert_idx').on(table.alertId),
+    pg
+      .index('deliveries_queued_idx')
+      .on(table.updatedAt)
+      .where(sql`${table.status} = 'queued'`),
   ],
 );
 
 /** E-mail states (`email_log.status`). */
-export type EmailStatus = 'retrying' | 'sent' | 'failed';
+export type EmailStatus = 'sending' | 'retrying' | 'sent' | 'failed';
 
 /** Transactional e-mails, one row per request envelope (`0001_init.sql`). */
 export const emailLog = serviceSchema.table(
@@ -169,6 +199,8 @@ export const emailLog = serviceSchema.table(
     error: pg.text('error'),
     messageId: pg.text('message_id'),
     sentAt: timestamptz('sent_at'),
+    /** End of the claim of a `sending` attempt (`0002_review_hardening.sql`). */
+    claimedUntil: timestamptz('claimed_until'),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
     updatedAt: timestamptz('updated_at').notNull().defaultNow(),
   },

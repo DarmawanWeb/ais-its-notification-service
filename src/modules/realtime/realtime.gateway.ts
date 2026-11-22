@@ -1,6 +1,8 @@
 import {
+  ALL_TILES_ROOM,
   AUTHORITY_ROOM,
   orgRoom,
+  parseTileRoom,
   REALTIME_CLIENT_EVENTS,
   REALTIME_PATH,
   type RealtimeAck,
@@ -67,6 +69,15 @@ export function tokenExpiry(token: string): Date | null {
 
 /** Clock tolerance of the access token verifier: expiry is enforced after it, ms. */
 const EXPIRY_TOLERANCE_MS = 30_000;
+
+/** Viewport rooms a connection is in: zoom-6 tile rooms and `tile:all`. */
+function viewportRoomsOf(socket: RealtimeSocket): Set<string> {
+  return new Set(
+    [...socket.rooms].filter(
+      (room) => room === ALL_TILES_ROOM || parseTileRoom(room) !== null,
+    ),
+  );
+}
 
 function invalid(message: string): RealtimeAck<never> {
   return { ok: false, error: { code: 'VALIDATION_FAILED', message } };
@@ -147,68 +158,105 @@ export class RealtimeGateway
     this.metrics.wsConnections.dec();
   }
 
-  /** `viewport:set` → zoom-6 tile rooms of the box, or `tile:all` beyond 64 tiles. */
+  /**
+   * `viewport:set` → zoom-6 tile rooms of the box, or `tile:all` beyond 64
+   * tiles, leaving the viewport rooms the connection is in (read from
+   * `socket.rooms`) that the new box does not cover.
+   */
   @SubscribeMessage(REALTIME_CLIENT_EVENTS.VIEWPORT_SET)
-  async onViewportSet(
+  onViewportSet(
     @ConnectedSocket() socket: RealtimeSocket,
     @MessageBody() body: unknown,
   ): Promise<RealtimeAck<ViewportSetResult>> {
     const request = ViewportSetRequestSchema.safeParse(body);
-    if (!request.success) return invalid(issues(request.error));
-    let plan;
-    try {
-      plan = planViewport(socket.data.viewportRooms, request.data.bbox);
-    } catch (error) {
-      if (error instanceof RangeError) return invalid(error.message);
-      throw error;
-    }
-    for (const room of plan.leave) await socket.leave(room);
-    if (plan.join.length > 0) await socket.join([...plan.join]);
-    socket.data.viewportRooms = new Set(plan.rooms);
-    return { ok: true, data: { mode: plan.mode, tileCount: plan.tileCount } };
+    if (!request.success)
+      return Promise.resolve(invalid(issues(request.error)));
+    const { bbox } = request.data;
+    return this.inOrder(socket, async () => {
+      let plan;
+      try {
+        plan = planViewport(viewportRoomsOf(socket), bbox);
+      } catch (error) {
+        if (error instanceof RangeError) return invalid(error.message);
+        throw error;
+      }
+      for (const room of plan.leave) await socket.leave(room);
+      if (plan.join.length > 0) await socket.join([...plan.join]);
+      return {
+        ok: true,
+        data: { mode: plan.mode, tileCount: plan.tileCount },
+      };
+    });
   }
 
   /** `vessel:subscribe` → `vessel:<mmsi>`, then the latest known state of the vessel. */
   @SubscribeMessage(REALTIME_CLIENT_EVENTS.VESSEL_SUBSCRIBE)
-  async onVesselSubscribe(
+  onVesselSubscribe(
     @ConnectedSocket() socket: RealtimeSocket,
     @MessageBody() body: unknown,
   ): Promise<RealtimeAck<VesselSubscribeRequest>> {
     const request = VesselSubscribeRequestSchema.safeParse(body);
-    if (!request.success) return invalid(issues(request.error));
+    if (!request.success)
+      return Promise.resolve(invalid(issues(request.error)));
     const { mmsi } = request.data;
-    if (
-      !socket.data.vessels.has(mmsi) &&
-      socket.data.vessels.size >= this.config.REALTIME_MAX_VESSEL_SUBSCRIPTIONS
-    ) {
-      return {
-        ok: false,
-        error: {
-          code: 'TOO_MANY_SUBSCRIPTIONS',
-          message: `At most ${this.config.REALTIME_MAX_VESSEL_SUBSCRIPTIONS} vessels per connection`,
-        },
-      };
-    }
-    await socket.join(vesselRoom(mmsi));
-    socket.data.vessels.add(mmsi);
-    // After the acknowledgement, so clients see the ack first.
-    setImmediate(() => {
-      if (socket.connected) this.hub.sendSnapshot(socket, mmsi);
+    return this.inOrder(socket, async () => {
+      if (
+        !socket.data.vessels.has(mmsi) &&
+        socket.data.vessels.size >=
+          this.config.REALTIME_MAX_VESSEL_SUBSCRIPTIONS
+      ) {
+        return {
+          ok: false,
+          error: {
+            code: 'TOO_MANY_SUBSCRIPTIONS',
+            message: `At most ${this.config.REALTIME_MAX_VESSEL_SUBSCRIPTIONS} vessels per connection`,
+          },
+        };
+      }
+      await socket.join(vesselRoom(mmsi));
+      socket.data.vessels.add(mmsi);
+      // After the acknowledgement, so clients see the ack first.
+      setImmediate(() => {
+        if (socket.connected) this.hub.sendSnapshot(socket, mmsi);
+      });
+      return { ok: true, data: { mmsi } };
     });
-    return { ok: true, data: { mmsi } };
   }
 
   /** `vessel:unsubscribe` → leaves `vessel:<mmsi>`. */
   @SubscribeMessage(REALTIME_CLIENT_EVENTS.VESSEL_UNSUBSCRIBE)
-  async onVesselUnsubscribe(
+  onVesselUnsubscribe(
     @ConnectedSocket() socket: RealtimeSocket,
     @MessageBody() body: unknown,
   ): Promise<RealtimeAck<VesselSubscribeRequest>> {
     const request = VesselSubscribeRequestSchema.safeParse(body);
-    if (!request.success) return invalid(issues(request.error));
-    await socket.leave(vesselRoom(request.data.mmsi));
-    socket.data.vessels.delete(request.data.mmsi);
-    return { ok: true, data: { mmsi: request.data.mmsi } };
+    if (!request.success)
+      return Promise.resolve(invalid(issues(request.error)));
+    const { mmsi } = request.data;
+    return this.inOrder(socket, async () => {
+      await socket.leave(vesselRoom(mmsi));
+      socket.data.vessels.delete(mmsi);
+      return { ok: true, data: { mmsi } };
+    });
+  }
+
+  /**
+   * Runs a room change of a connection after its earlier ones. socket.io
+   * dispatches events without waiting for asynchronous handlers, so two
+   * `viewport:set` sent back to back (map panning) would otherwise both plan
+   * from the rooms before either ran, and the rooms joined by the first would
+   * never be left.
+   */
+  private inOrder<Result>(
+    socket: RealtimeSocket,
+    change: () => Promise<Result>,
+  ): Promise<Result> {
+    const run = socket.data.roomChanges.then(change);
+    socket.data.roomChanges = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   /** Verifies the handshake token and prepares `socket.data`. */
@@ -233,7 +281,7 @@ export class RealtimeGateway
     }
     socket.data = {
       principal,
-      viewportRooms: new Set(),
+      roomChanges: Promise.resolve(),
       vessels: new Set(),
       expiryTimer: this.reauthTimer(socket, auth.data.token),
     };

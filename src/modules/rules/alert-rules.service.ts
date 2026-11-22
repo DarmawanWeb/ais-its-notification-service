@@ -4,7 +4,11 @@ import {
   toPaginated,
 } from '@darmawanweb/ais-its-contracts/api';
 import { newId } from '@darmawanweb/ais-its-contracts/domain';
-import { DomainError, ForbiddenError } from '@darmawanweb/ais-its-nest';
+import {
+  ConflictError,
+  DomainError,
+  ForbiddenError,
+} from '@darmawanweb/ais-its-nest';
 import {
   type AuditRequest,
   AuditService,
@@ -15,7 +19,6 @@ import {
 } from '@darmawanweb/ais-its-nest/auth';
 import { Injectable } from '@nestjs/common';
 
-import type { RuleScope } from '../../domain/alert-rules.js';
 import { ChannelPolicy } from '../deliveries/channels/channel-policy.js';
 import {
   type AlertRule,
@@ -25,6 +28,10 @@ import {
   requireRuleTenancy,
 } from './alert-rule.js';
 import { AlertRulesRepository } from './alert-rules.repository.js';
+import { assertRuleScope, defaultRuleScope } from './rule-scope.js';
+
+/** Attempts of an update that races with a concurrent scope change. */
+const UPDATE_ATTEMPTS = 3;
 
 /** Input of a new rule (unset fields take their defaults). */
 export type CreateAlertRuleInput = Partial<
@@ -43,15 +50,20 @@ export class AlertRulesService {
     private readonly audit: AuditService,
   ) {}
 
-  /** Creates a rule in the active organization (super_admin: any organization). */
+  /**
+   * Creates a rule in the active organization (super_admin: any
+   * organization). Scope `all` is the default, and allowed, only for rules
+   * of an authority organization written by its authority members
+   * (`assertRuleScope`).
+   */
   async create(
     input: CreateAlertRuleInput,
     principal: Principal,
     request?: AuditRequest,
   ): Promise<AlertRule> {
     const orgId = owningOrg(input.orgId, principal);
-    const scope = input.scope ?? defaultScope(principal);
-    assertScope(scope, principal);
+    const scope = input.scope ?? defaultRuleScope(principal, orgId);
+    assertRuleScope({ orgId, current: undefined, next: scope }, principal);
     this.channels.assertUsable(input.channels, 'channels');
     const rule = await this.rules.insert({
       id: newId(),
@@ -97,32 +109,55 @@ export class AlertRulesService {
     return toPaginated(rows, page, total);
   }
 
-  /** Changes a rule; an empty change set returns it unchanged. */
+  /**
+   * Changes a rule; an empty change set returns it unchanged. Every change of
+   * a rule whose scope is or becomes `all` is authorized against the stored
+   * scope (`assertRuleScope`); the update applies only while that scope is
+   * still stored, otherwise the change is authorized again.
+   */
   async update(
     id: string,
     changes: AlertRuleChanges,
     principal: Principal,
     request?: AuditRequest,
   ): Promise<AlertRule> {
-    const current = await this.get(id, principal);
     const fields = changedFields(changes);
-    if (fields.length === 0) return current;
-    if (changes.scope !== undefined && changes.scope !== current.scope) {
-      assertScope(changes.scope, principal);
+    for (let attempt = 1; ; attempt += 1) {
+      const current = await this.get(id, principal);
+      if (fields.length === 0) return current;
+      assertRuleScope(
+        {
+          orgId: current.orgId,
+          current: current.scope,
+          next: changes.scope ?? current.scope,
+        },
+        principal,
+      );
+      if (changes.channels !== undefined) {
+        this.channels.assertUsable(changes.channels, 'channels');
+      }
+      const rule = await this.rules.update(
+        id,
+        requireRuleTenancy(principal),
+        current.scope,
+        changes,
+      );
+      if (rule !== undefined) {
+        await this.record('alert_rule.update', rule, principal, request, {
+          fields,
+        });
+        return rule;
+      }
+      // Deleted (the next read answers 404) or its scope changed meanwhile.
+      if (attempt >= UPDATE_ATTEMPTS) {
+        throw new ConflictError(
+          `Alert rule ${id} changed concurrently, retry`,
+          {
+            code: 'CONFLICT',
+          },
+        );
+      }
     }
-    if (changes.channels !== undefined) {
-      this.channels.assertUsable(changes.channels, 'channels');
-    }
-    const rule = await this.rules.update(
-      id,
-      requireRuleTenancy(principal),
-      changes,
-    );
-    if (rule === undefined) throw ruleNotFound(id);
-    await this.record('alert_rule.update', rule, principal, request, {
-      fields,
-    });
-    return rule;
   }
 
   /** Deletes a rule and its delivery history. */
@@ -178,28 +213,6 @@ function owningOrg(
     });
   }
   return principal.orgId;
-}
-
-/** Authority and super_admin rules watch every vessel by default, others their fleet. */
-function defaultScope(principal: Principal): RuleScope {
-  return principal.kind === 'user' && principal.hasAuthorityAccess
-    ? 'all'
-    : 'org';
-}
-
-/** Scope `all` ("authority-org rules may match any vessel") needs cross-tenant access. */
-function assertScope(scope: RuleScope, principal: Principal): void {
-  if (
-    scope === 'all' &&
-    !(principal.kind === 'user' && principal.hasAuthorityAccess)
-  ) {
-    throw new ForbiddenError(
-      'Only authority and super_admin rules may watch every vessel',
-      {
-        code: 'RULE_SCOPE_FORBIDDEN',
-      },
-    );
-  }
 }
 
 /** Names of the fields a change set sets (absent and `undefined` mean "keep"). */

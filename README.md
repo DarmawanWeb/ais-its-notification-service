@@ -49,7 +49,7 @@ flowchart LR
   subgraph svc["notification (one or more instances)"]
     AC["AlertsConsumer<br/>durable notification-alerts"]
     ING["AlertIngestService<br/>merge (dedup_key) + plan deliveries<br/>one transaction"]
-    DW["DeliveryWorker<br/>FOR UPDATE SKIP LOCKED, leases, backoff"]
+    DW["DeliveryWorker<br/>slot pool, SKIP LOCKED claims, leases, backoff"]
     EC["EmailConsumer<br/>durable notification-email"]
     FP["FleetProjection<br/>durable notification-fleet"]
     RS["RealtimeStreams<br/>ordered consumers (per instance)"]
@@ -58,7 +58,7 @@ flowchart LR
     REST["REST /api/v2<br/>alerts, alert-rules, notifications"]
   end
 
-  DB[("PostgreSQL schema notify<br/>alerts (hypertable), alert_rules,<br/>deliveries, email_log, vessels")]
+  DB[("PostgreSQL schema notify<br/>alerts (hypertable), open_alerts, alert_rules,<br/>deliveries, email_log, vessels")]
   SMTP[[SMTP / Mailpit]]
   TG[[Telegram Bot API]]
   WH[[Webhook receivers]]
@@ -87,14 +87,26 @@ flowchart LR
   stores or merges the alert (pure `mergeOccurrence`), matches the rules (pure `ruleMatchesAlert`,
   `isWithinQuietPeriod`) and inserts the deliveries **in the same transaction**, so an alert is
   never stored without its deliveries. After the commit it fans the push out and wakes the
-  delivery worker.
-- **Deliveries**: every instance polls due deliveries (`DELIVERY_POLL_INTERVAL_MS`, and at once
-  when woken); claims are exclusive (`FOR UPDATE SKIP LOCKED`) and leased (`DELIVERY_LEASE_MS`), so
-  instances share the work and an attempt of a crashed instance is retried after its lease.
-  Failures are retried after `base × 2^(attempt − 1)` (honouring `Retry-After` / Telegram
-  `retry_after`) up to `DELIVERY_MAX_ATTEMPTS`; permanent refusals (4xx, unknown chat) fail at once.
-  E-mail deliveries are handed to `NOTIFY` (status `queued`); the e-mail consumer marks them
-  `sent` or `failed`.
+  delivery worker. The unresolved alert of a key is found through the regular table
+  `open_alerts` and read **without row locks** (TimescaleDB cannot lock tuples of compressed
+  chunks, and an alert may stay unresolved long after its chunk was compressed); the merge
+  update is conditional on the status it read, so a concurrent acknowledge / resolve wins and
+  the occurrence is applied again to the new state (resolved: a new alert).
+- **Deliveries**: every instance runs a pool of `DELIVERY_CONCURRENCY` attempt slots, refilled
+  as soon as a slot frees up (and polled every `DELIVERY_POLL_INTERVAL_MS`); claims are exclusive
+  (`FOR UPDATE SKIP LOCKED`) and leased (`DELIVERY_LEASE_MS`, at least twice the longest channel
+  timeout), so instances share the work and an attempt of a crashed instance is retried after its
+  lease. Each attempt has a total deadline (`WEBHOOK_TIMEOUT_MS` / `TELEGRAM_TIMEOUT_MS`), so a
+  slow receiver holds one slot for at most that long and never delays other tenants. Failures are
+  retried after `base × 2^(attempt − 1)` (honouring `Retry-After` / Telegram `retry_after`) up to
+  `DELIVERY_MAX_ATTEMPTS`; permanent refusals (4xx, unknown chat) fail at once. E-mail deliveries
+  are handed to `NOTIFY` (status `queued`); the e-mail consumer marks them `sent` or `failed`, and
+  the hourly housekeeping queues lost requests again (see Operations).
+- **E-mail**: each SMTP exchange runs under a claim of the request's `email_log` row (`sending`
+  until `claimed_until`), so two copies of one request send it once. Once the SMTP server accepted
+  a message it is never sent again: the log row and the alert delivery are recorded in one
+  transaction, retried in place, and remembered in memory when the database keeps failing (the
+  redelivered request only redoes the bookkeeping).
 - **Realtime**: every instance runs its own ordered (ephemeral) consumers on `AIS_POSITION`
   (`new`), `SAFETY` (`last_per_subject`, warming the latest state of every vessel) and `EMISSION`
   (`new`), and pushes to its own clients. Alert pushes (from the durable consumer or a REST
@@ -116,22 +128,24 @@ consumers and NATS drain, the delivery worker finishes its attempts and the pool
 | `src/modules/deliveries/`         | delivery worker, channels (e-mail, Telegram, webhook), test notifications                   |
 | `src/modules/email/`              | `notification-email` consumer, templates (`id` / `en`), SMTP mailer                         |
 | `src/modules/realtime/`           | socket.io gateway, hub, ordered consumers, alert fan-out                                    |
-| `src/modules/vessels/`            | `notification-fleet` projection (mmsi → owner organization)                                 |
-| `src/modules/housekeeping/`       | retention of processed event ids, deliveries and the e-mail log                             |
+| `src/modules/vessels/`            | `notification-fleet` projection (mmsi → owner organization, tombstones)                     |
+| `src/modules/housekeeping/`       | retention of bookkeeping rows, requeue of lost alert e-mails                                |
+| `src/common/`                     | `@OptionalNotNull()` (optional body fields that refuse `null`)                              |
 | `src/modules/methodology/`        | `GET /api/v2/notifications/methodology`                                                     |
 | `migrations/`, `src/db/schema.ts` | forward-only SQL and its drizzle mirror                                                     |
 | `test/`                           | integration tests (`*.int.test.ts`) against real containers                                 |
 
 ## Data model
 
-| Table              | Kind                                     | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| ------------------ | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `alerts`           | hypertable on `occurred_at` (7 d chunks) | `id` (= alert / envelope id of the first occurrence), `type`, `domain`, `severity` (highest merged), `mmsi`, `related_mmsi`, `org_id` (vessel owner when stored), `title`, `message`, `lat`, `lon`, `zone_id`, `method_id`, `dedup_key`, `data`, `source`, `status` (`open` / `acknowledged` / `resolved`), `acknowledged_by/at`, `resolved_by/at`, `occurrences`, `last_occurred_at`. Compressed after 90 days (segment `mmsi`), dropped after 2 years. Partial index on `dedup_key` of unresolved alerts. |
-| `alert_rules`      | table                                    | `org_id`, `created_by`, `name`, `scope` (`org` = own fleet, `all` = every vessel, authority only), `types[]`, `domains[]`, `min_severity`, `mmsi[]`, `zone_ids[]`, `channels` jsonb `[{ type, target }]` (1–10), `locale` (`id` / `en`), `quiet_minutes`, `enabled`. Empty lists match everything.                                                                                                                                                                                                          |
-| `deliveries`       | table                                    | `alert_id`, `rule_id` (cascade), `channel`, `target`, `severity` (when planned), `status` (`pending` → `sending` → `sent` / `failed`; e-mail `sending` → `queued` → `sent` / `failed`), `attempts`, `error`, `payload` (alert as pushed, rule and vessel names, locale, link), `next_attempt_at`, `lease_until`, `sent_at`.                                                                                                                                                                                 |
-| `email_log`        | table                                    | one row per `notify.email.requested.v1` envelope (idempotency key): recipient, template, locale, subject, source, `delivery_id`, `status` (`retrying` / `sent` / `failed`), `attempts`, `error`, SMTP `message_id`. Bodies are never stored (reset links).                                                                                                                                                                                                                                                  |
-| `vessels`          | projection of `FLEET`                    | `vessel_id`, `mmsi` (unique), `org_id`, `name`, `updated_at` — a snapshot never overwrites a newer one.                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `processed_events` | idempotency                              | `(consumer, event_id)` of handled alert envelopes, kept `IDEMPOTENCY_RETENTION_DAYS` (≥ the 90 days of `ALERTS`).                                                                                                                                                                                                                                                                                                                                                                                           |
+| Table              | Kind                                     | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ------------------ | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `alerts`           | hypertable on `occurred_at` (7 d chunks) | `id` (= alert / envelope id of the first occurrence), `type`, `domain`, `severity` (highest merged), `mmsi`, `related_mmsi`, `org_id` (vessel owner when stored), `title`, `message`, `lat`, `lon`, `zone_id`, `method_id`, `dedup_key`, `data`, `source`, `status` (`open` / `acknowledged` / `resolved`), `acknowledged_by/at`, `resolved_by/at`, `occurrences`, `last_occurred_at`. Compressed after 90 days (segment `mmsi`), dropped after 2 years. |
+| `open_alerts`      | table                                    | `dedup_key` (PK), `alert_id`, `occurred_at`, `mmsi`: the unresolved alert of each dedup key (merge lookup by primary key, also for alerts in compressed chunks). Inserted with the alert, removed by a resolve; entries of alerts dropped by the retention policy are pruned.                                                                                                                                                                            |
+| `alert_rules`      | table                                    | `org_id`, `created_by`, `name`, `scope` (`org` = own fleet, `all` = every vessel, rules of authority organizations only), `types[]`, `domains[]`, `min_severity`, `mmsi[]`, `zone_ids[]`, `channels` jsonb `[{ type, target }]` (1–10), `locale` (`id` / `en`), `quiet_minutes`, `enabled`. Empty lists match everything.                                                                                                                                |
+| `deliveries`       | table                                    | `alert_id`, `rule_id` (cascade), `channel`, `target`, `severity` (when planned), `status` (`pending` → `sending` → `sent` / `failed`; e-mail `sending` → `queued` → `sent` / `failed`), `attempts`, `error`, `payload` (alert as pushed, rule and vessel names, locale, link), `next_attempt_at`, `lease_until`, `sent_at`.                                                                                                                              |
+| `email_log`        | table                                    | one row per `notify.email.requested.v1` envelope (idempotency key): recipient, template, locale, subject, source, `delivery_id`, `status` (`sending` / `retrying` / `sent` / `failed`), `claimed_until` (claim of a `sending` attempt), `attempts` (claims), `error`, SMTP `message_id`. Bodies are never stored (reset links).                                                                                                                          |
+| `vessels`          | projection of `FLEET`                    | `vessel_id`, `mmsi` (unique among live vessels), `org_id`, `name`, `updated_at`, `deleted_at` — a snapshot never overwrites a newer one; a deleted vessel stays as a tombstone that ignores every later snapshot.                                                                                                                                                                                                                                        |
+| `processed_events` | idempotency                              | `(consumer, event_id)` of handled alert envelopes, kept `IDEMPOTENCY_RETENTION_DAYS` (≥ the 90 days of `ALERTS`).                                                                                                                                                                                                                                                                                                                                        |
 
 Finished deliveries and e-mail log rows are pruned after `NOTIFICATION_LOG_RETENTION_DAYS` by the
 hourly housekeeping job.
@@ -166,8 +180,14 @@ Outside the prefix: `GET /health/live`, `GET /health/ready`, `GET /metrics`, `GE
 alerts whose vessel **or related vessel** belongs to their active organization (evaluated against
 the current `FLEET` projection); without an organization nothing. Rules and deliveries are
 tenant-private (`super_admin` manages all). Rules of scope `all` ("authority-org rules may match
-any vessel") can only be created by `authority` / `super_admin` principals (their default);
-others get `403 RULE_SCOPE_FORBIDDEN`. Error codes: `ALERT_NOT_FOUND`, `ALERT_ALREADY_RESOLVED`,
+any vessel") belong to authority organizations: a rule gets or keeps scope `all` only when it is
+written by a member holding the `authority` role **in the rule's own organization** (the token's
+roles are those of the active organization, and auth grants `authority` only in organizations of
+kind `authority`) — the default scope of such a rule is `all`, of every other rule `org`, also when
+a `super_admin` creates it for a shipping company. Every change of a rule whose scope is `all`
+(channels, criteria, scope) needs that authority membership or `super_admin`, so other members
+cannot redirect the cross-tenant feed; others get `403 RULE_SCOPE_FORBIDDEN`. Optional body
+fields may be omitted but never `null` (`400 VALIDATION_FAILED`). Error codes: `ALERT_NOT_FOUND`, `ALERT_ALREADY_RESOLVED`,
 `ALERT_RULE_NOT_FOUND`, `RULE_SCOPE_FORBIDDEN`, `ORGANIZATION_REQUIRED`,
 `CHANNEL_NOT_CONFIGURED` (422: Telegram without `TELEGRAM_BOT_TOKEN`, webhook without
 `WEBHOOK_SIGNING_SECRET`), `VALIDATION_FAILED`, `RATE_LIMITED`, `CONFLICT`.
@@ -184,9 +204,11 @@ the severity rose (escalations always notify); other alerts are never held back.
 
 ### Webhooks
 
-`POST <target>` with `Content-Type: application/json`, no redirects followed, timeout
-`WEBHOOK_TIMEOUT_MS`; 2xx = sent, 408 / 429 / 5xx / network errors are retried, other statuses
-fail for good. Loopback, private and link-local targets are refused (also after DNS resolution)
+`POST <target>` with `Content-Type: application/json`, no redirects followed. Each attempt has a
+**total** deadline of `WEBHOOK_TIMEOUT_MS` (DNS, connect, TLS, request and response head); the
+outcome is the status line — the response body is never read, so a receiver that answers slowly
+or drips its body cannot hold the attempt. 2xx = sent, 408 / 429 / 5xx / network errors and
+timeouts are retried, other statuses fail for good. Loopback, private and link-local targets are refused (also after DNS resolution)
 unless `WEBHOOK_ALLOW_PRIVATE_TARGETS=true`.
 
 | Header                | Value                                                                        |
@@ -249,8 +271,8 @@ schemas; outbound shapes are built with the contracts projections (`toRealtimePo
 | Direction | Stream / subject                            | Type                                                  | Consumer / producer                                                                          |
 | --------- | ------------------------------------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------- |
 | consumes  | `ALERTS` `alert.v1.<type>.<mmsi>`           | `alert.raised.v1`                                     | durable `notification-alerts` (concurrency 4, per-vessel order)                              |
-| consumes  | `NOTIFY` `notify.email.v1` (work queue)     | `notify.email.requested.v1`                           | durable `notification-email` (concurrency 4, ack wait 60 s)                                  |
-| consumes  | `FLEET` `fleet.vessel.v1.<vesselId>`        | `fleet.vessel.upserted.v1`, `fleet.vessel.deleted.v1` | durable `notification-fleet`                                                                 |
+| consumes  | `NOTIFY` `notify.email.v1` (work queue)     | `notify.email.requested.v1`                           | durable `notification-email` (concurrency 4 without per-subject order, ack wait 60 s)        |
+| consumes  | `FLEET` `fleet.vessel.v1.<vesselId>`        | `fleet.vessel.upserted.v1`, `fleet.vessel.deleted.v1` | durable `notification-fleet` (concurrency 4, per-vessel order)                               |
 | consumes  | `AIS_POSITION` `ais.position.v1.<p>.<mmsi>` | `ais.position.recorded.v1`                            | ordered `notification-positions` per instance (`new`)                                        |
 | consumes  | `SAFETY` `safety.state.v1.<mmsi>`           | `safety.vessel_state.updated.v1`                      | ordered `notification-safety` per instance (`last_per_subject`)                              |
 | consumes  | `EMISSION` `emission.cii.v1.<mmsi>`         | `emission.cii.updated.v1`                             | ordered `notification-cii` per instance (`new`)                                              |
@@ -262,7 +284,10 @@ Streams produced to (`NOTIFY`, `AUDIT`) are created or widened on boot; consumed
 created when missing. Invalid messages are terminated and counted; transient failures are retried
 with backoff and dead-lettered to `dlq.<stream>.<consumer>` after 10 deliveries. Handlers are
 idempotent: alerts by envelope id (`processed_events`) and per `dedupKey`, e-mails by envelope id
-(`email_log`), the projection by `updatedAt`.
+(`email_log`, claimed before the SMTP exchange: all requests share one subject, so the consumer
+handles them concurrently and two copies of one request send it once), the projection by
+`updatedAt` and deletion tombstones (a redelivered older upsert never brings a deleted vessel
+back).
 
 **E-mail templates** (`data` of `notify.email.requested.v1`, validated per template; invalid data
 is never retried; links must be absolute http(s) URLs; every value is HTML-escaped):
@@ -299,15 +324,15 @@ prints every problem. Every variable is in [`.env.example`](.env.example).
 | `OTEL_EXPORTER_OTLP_ENDPOINT`                                              | —                                                        | traces (OTLP/HTTP) when set                                                  |
 | `SMTP_URL`                                                                 | `smtp://localhost:1025`                                  | Mailpit in development; `smtps://user:pass@host:465`                         |
 | `SMTP_FROM`                                                                | `AIS Maritime Intelligence <no-reply@ais-its.local>`     |                                                                              |
-| `SMTP_TIMEOUT_MS`                                                          | `30000`                                                  | connection, greeting and socket timeout                                      |
+| `SMTP_TIMEOUT_MS`                                                          | `30000`                                                  | connection, greeting and socket timeout; the claim of an exchange is 4 ×     |
 | `TELEGRAM_BOT_TOKEN`                                                       | —                                                        | Telegram channel disabled while unset (`422 CHANNEL_NOT_CONFIGURED`)         |
 | `TELEGRAM_API_BASE` / `TELEGRAM_TIMEOUT_MS`                                | `https://api.telegram.org` / `10000`                     | a fake API in tests                                                          |
 | `WEBHOOK_SIGNING_SECRET`                                                   | —                                                        | ≥ 16 characters; webhook channel disabled while unset                        |
-| `WEBHOOK_TIMEOUT_MS`                                                       | `10000`                                                  |                                                                              |
+| `WEBHOOK_TIMEOUT_MS`                                                       | `10000`                                                  | total deadline of one attempt (response head)                                |
 | `WEBHOOK_ALLOW_PRIVATE_TARGETS`                                            | `false`                                                  | SSRF guard off (local development and tests only)                            |
 | `DELIVERY_MAX_ATTEMPTS`                                                    | `6`                                                      | attempts before `failed`                                                     |
 | `DELIVERY_RETRY_BASE_MS` / `DELIVERY_RETRY_MAX_MS`                         | `30000` / `3600000`                                      | backoff `base × 2^(n − 1)`, capped                                           |
-| `DELIVERY_POLL_INTERVAL_MS` / `DELIVERY_BATCH_SIZE` / `DELIVERY_LEASE_MS`  | `1000` / `20` / `120000`                                 | worker polling, claim size, lease of a claimed delivery                      |
+| `DELIVERY_POLL_INTERVAL_MS` / `DELIVERY_CONCURRENCY` / `DELIVERY_LEASE_MS` | `1000` / `20` / `120000`                                 | polling, attempts in flight per instance, lease (≥ 2 × longest timeout)      |
 | `REALTIME_TILE_BATCH_INTERVAL_MS` / `REALTIME_ALL_TILES_BATCH_INTERVAL_MS` | `1000` / `5000`                                          | batch windows (spec §9)                                                      |
 | `REALTIME_MAX_VESSELS`                                                     | `200000`                                                 | live vessel state kept in memory (LRU)                                       |
 | `REALTIME_MAX_VESSEL_SUBSCRIPTIONS`                                        | `100`                                                    | `vessel:<mmsi>` rooms per connection                                         |
@@ -364,22 +389,32 @@ pnpm openapi     # regenerate openapi.json (no infrastructure needed); CI runs o
 - **Unit** (`src/**/*.spec.ts`): rule matching, merge / lifecycle, quiet period, retry backoff,
   webhook signature (golden HMAC computed with OpenSSL), viewport rooms, the batcher and live
   state (no sockets), alert texts, template rendering and escaping (`id` / `en`), Telegram
-  formatting limits, SSRF target checks, the gateway handshake and rooms.
+  formatting limits, SSRF target checks, the gateway handshake and rooms (room changes sent back
+  to back stay in order), the delivery worker's slot pool (a slow attempt never holds the others),
+  the e-mail service (claim before SMTP, an accepted e-mail is never sent again when recording it
+  fails), rule scopes (`all` only for authority organizations) and `null` in rule bodies.
 - **Integration** (`test/*.int.test.ts`): the real `AppModule` against containers started once by
   `test/support/global-setup.ts` (`timescale/timescaledb-ha:pg17`, `nats:2.11-alpine`,
   `axllent/mailpit:latest`), signed test JWTs, local fake HTTP servers:
   - `alerts`: alert events → stored / merged alerts → deliveries — e-mail asserted through the
     Mailpit HTTP API, webhook through a local server verifying the signature (and a retry after a
     503), Telegram through a fake Bot API (`TELEGRAM_API_BASE`); quiet period vs escalation,
-    redelivery idempotency, authority vs foreign-organization rules, permanent failures;
+    redelivery idempotency, authority vs foreign-organization rules, permanent failures; a merge
+    into an unresolved alert whose chunk is compressed (and its resolve), a resolve racing a
+    merge, slow (stalling / dripping) webhook receivers that do not delay other tenants;
   - `email`: the `NOTIFY` consumer sending a password reset (escaped, localized), an invitation,
-    idempotency and terminated invalid requests;
+    idempotency, two concurrent copies of one request sent once, terminated invalid requests, and
+    lost alert e-mails queued again (and expired ones failed);
   - `rest`: tenancy of alerts (own / related vessel, authority, no organization), filters and
-    cursors, ack / resolve, rules tenancy and scopes, channel validation, test notifications;
+    cursors, ack / resolve, rules tenancy and scopes (a `super_admin` rule for a shipping company
+    stays `org`; only authority members change `all` rules), `PATCH` with `null` → 400, channel
+    validation, test notifications;
+  - `fleet`: deletion tombstones (an upsert redelivered after the delete is ignored, a new vessel
+    can take the MMSI over, a deletion before any snapshot);
   - `realtime`: socket.io end to end with `socket.io-client` — bad tokens refused, viewport
-    `positions` and `safety:states` batches for events published to NATS, `tile:all`, vessel room
-    updates, alerts only to `authority` and the owner organization, `cii:updated` to the
-    organization;
+    `positions` and `safety:states` batches for events published to NATS, `tile:all` (and leaving
+    it when viewports are sent back to back), vessel room updates, alerts only to `authority` and
+    the owner organization, `cii:updated` to the organization;
   - `app`: health, migrations, 401, methodology, OpenAPI, metrics.
 
 ## Operations
@@ -412,7 +447,21 @@ pnpm openapi     # regenerate openapi.json (no infrastructure needed); CI runs o
     `dlq.NOTIFY.notification-email` and the alert delivery marked `failed`.
   - _Deliveries stay `pending`_: look at `deliveries.error` / `next_attempt_at`
     (`GET /api/v2/notifications/deliveries?status=pending`); `CHANNEL_NOT_CONFIGURED` means the
-    bot token or signing secret is missing on this deployment.
+    bot token or signing secret is missing on this deployment; `Webhook unreachable: ETIMEDOUT`
+    means the receiver did not answer within `WEBHOOK_TIMEOUT_MS` (it holds one of the
+    `DELIVERY_CONCURRENCY` slots at most that long, other deliveries go on).
+  - _Alert e-mails stay `queued`_: the hourly housekeeping queues an alert e-mail again when its
+    NOTIFY request shows no progress for an hour (lost, e.g. a purged stream); the consumer
+    claims each request before sending, so it is sent once. After the NOTIFY max age (7 days) the
+    delivery is failed (`The e-mail request was lost …`). Log line
+    `Queued lost alert e-mails again` counts both.
+  - _`E-mail sent but not recorded`_ (error log): SMTP accepted the e-mail but the database
+    failed; the request is redelivered for the bookkeeping only and is not sent again by this
+    instance (a crash in that window can resend once from another instance).
+  - _A merge waits or retries_ (`Alert changed during a merge, merging again`, debug): an
+    acknowledge or resolve changed the alert between the merge's read and its update; the
+    occurrence is applied again (resolved: a new alert). Merges never lock rows, so alerts in
+    compressed chunks (older than 90 days) merge like recent ones.
   - _Webhook refused as private_: targets on loopback/private networks need
     `WEBHOOK_ALLOW_PRIVATE_TARGETS=true` (never in production).
   - _Realtime clients get `UNAUTHORIZED`_: the token expired (clients must reconnect with a fresh
@@ -421,6 +470,21 @@ pnpm openapi     # regenerate openapi.json (no infrastructure needed); CI runs o
   - _No positions on the map_: the viewport must be set after (re)connecting; check
     `aisits_events_consumed_total{consumer="notification-positions"}` and that the AIS pipeline
     publishes `AIS_POSITION`.
+- **Known limitations** (accepted by design):
+  - Alert pushes between instances use core NATS (best effort): an instance briefly cut off from
+    NATS misses those pushes; the inbox stays authoritative and clients refresh it from REST when
+    they reconnect.
+  - The test-notification throttle (10 per user per 10 min) is per instance: the service uses no
+    Valkey, and the endpoint needs `alert_rule:write` and validated targets.
+  - `tile:all` batches carry the latest position of every vessel that reported in the 5 s window
+    (spec §9); continental viewports of busy areas get large batches (no paging or compression).
+  - A recurrence after a resolve is a new alert and is notified again (spec §13.9 merges only
+    while unresolved; detectors damp flapping with their own cooldown).
+  - Visibility follows the current `FLEET` projection (spec §8.5): when a vessel changes owner
+    its past alerts move with it; a deleted vessel's alerts stay visible to `authority` and
+    `super_admin` only. `alerts.org_id` keeps the owner at ingest time for reference.
+  - E-mail is at-least-once across a crash between the SMTP acceptance and its bookkeeping (the
+    redelivered request may be sent again by another instance once its claim expired).
 - **Release**: move the `Unreleased` entries of [CHANGELOG.md](CHANGELOG.md) under the new
   version, bump `package.json`, tag `v<version>`.
 
@@ -462,7 +526,7 @@ details until they are catalogued):
 | -------------------------------- | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `notify.alert_dedup_merge`       | `mergeOccurrence` (`src/domain/alert-inbox.ts`)                                       | same `dedup_key` while unresolved → `occurrences++`, severity = max, details of the newest occurrence, escalation reopens an acknowledged alert — spec §13.9               |
 | `notify.alert_lifecycle`         | `transitionAlert` (`src/domain/alert-inbox.ts`)                                       | open → acknowledged → resolved, idempotent, resolved cannot be acknowledged — spec §13.9                                                                                   |
-| `notify.alert_rule_matching`     | `ruleMatchesAlert` (`src/domain/alert-rules.ts`)                                      | type / domain, severity ≥ min, vessel or related vessel, zone, organization (scope `all` for authority) — spec §13.9, §8.5                                                 |
+| `notify.alert_rule_matching`     | `ruleMatchesAlert` (`src/domain/alert-rules.ts`)                                      | type / domain, severity ≥ min, vessel or related vessel, zone, organization (scope `all` for authority organizations) — spec §13.9, §8.5                                   |
 | `notify.rule_quiet_period`       | `isWithinQuietPeriod` (`src/domain/alert-rules.ts`)                                   | no repeat of the same alert within `quiet_minutes` unless escalated — spec §13.9                                                                                           |
 | `notify.delivery_retry_backoff`  | `retryDelayMs`, `planRetry` (`src/domain/delivery-retry.ts`)                          | `base × 2^(n − 1)` capped, honours `Retry-After`; permanent failures stop — spec §13.9                                                                                     |
 | `notify.webhook_signature`       | `signWebhookPayload` (`src/domain/webhook-signature.ts`)                              | HMAC-SHA256 over `<timestamp>.<raw body>` — spec §13.9, [RFC 2104](https://www.rfc-editor.org/rfc/rfc2104), [FIPS 180-4](https://csrc.nist.gov/pubs/fips/180-4/upd1/final) |

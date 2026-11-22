@@ -41,6 +41,15 @@ describe('configSchema', () => {
     expect(() => load({ PORT: 'eighty' })).toThrow(ConfigValidationError);
   });
 
+  it('refuses a delivery lease shorter than twice the longest channel timeout', () => {
+    expect(() =>
+      load({ WEBHOOK_TIMEOUT_MS: '70000', DELIVERY_LEASE_MS: '120000' }),
+    ).toThrow(/DELIVERY_LEASE_MS/);
+    expect(
+      load({ WEBHOOK_TIMEOUT_MS: '60000', DELIVERY_LEASE_MS: '120000' }),
+    ).toMatchObject({ DELIVERY_LEASE_MS: 120_000, DELIVERY_CONCURRENCY: 20 });
+  });
+
   it('refuses the development secrets in production', () => {
     expect(() =>
       load({

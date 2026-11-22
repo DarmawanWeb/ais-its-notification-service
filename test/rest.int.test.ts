@@ -52,6 +52,7 @@ const RuleSchema = z.object({
   name: z.string(),
   enabled: z.boolean(),
   locale: z.string(),
+  channels: z.array(z.object({ type: z.string(), target: z.string() })),
 });
 const RulePageSchema = z.object({
   data: z.array(RuleSchema),
@@ -377,6 +378,106 @@ describe('REST API and tenancy (spec §8.5, §13.9)', () => {
         { ...rule, enabled: false },
       );
       expect(RuleSchema.parse(authority.json()).scope).toBe('all');
+    });
+
+    it('derives the scope from the rule organization, not from a super_admin creator', async () => {
+      const superAdmin = { roles: ['super_admin'] as Role[], orgId: newId() };
+      // A rule a super_admin creates for a shipping company watches its fleet only.
+      const forCompany = await call('POST', '/alert-rules', superAdmin, {
+        ...rule,
+        orgId: orgB,
+        enabled: false,
+      });
+      expect(forCompany.statusCode, forCompany.body).toBe(201);
+      expect(RuleSchema.parse(forCompany.json())).toMatchObject({
+        orgId: orgB,
+        scope: 'org',
+      });
+      const widened = await call('POST', '/alert-rules', superAdmin, {
+        ...rule,
+        orgId: orgB,
+        scope: 'all',
+      });
+      expect(widened.statusCode).toBe(403);
+      expect(ProblemSchema.parse(widened.json()).code).toBe(
+        'RULE_SCOPE_FORBIDDEN',
+      );
+      const { id } = RuleSchema.parse(forCompany.json());
+      const patched = await call(
+        'PATCH',
+        `/alert-rules/${id}`,
+        { roles: ['org_admin'], orgId: orgB },
+        { scope: 'all' },
+      );
+      expect(patched.statusCode).toBe(403);
+    });
+
+    it('lets only authority members change a rule that watches every vessel', async () => {
+      const authorityOrg = newId();
+      const created = await call(
+        'POST',
+        '/alert-rules',
+        { roles: ['authority'], orgId: authorityOrg },
+        { ...rule, enabled: false },
+      );
+      const { id, scope } = RuleSchema.parse(created.json());
+      expect(scope).toBe('all');
+
+      // Another member of the authority organization cannot redirect the feed.
+      const redirected = await call(
+        'PATCH',
+        `/alert-rules/${id}`,
+        { roles: ['org_admin'], orgId: authorityOrg },
+        { channels: [{ type: 'webhook', target: `${webhook.url}/attacker` }] },
+      );
+      expect(redirected.statusCode).toBe(403);
+      expect(ProblemSchema.parse(redirected.json()).code).toBe(
+        'RULE_SCOPE_FORBIDDEN',
+      );
+      const stored = RuleSchema.parse(
+        (
+          await call('GET', `/alert-rules/${id}`, {
+            roles: ['authority'],
+            orgId: authorityOrg,
+          })
+        ).json(),
+      );
+      expect(stored.channels).toEqual(rule.channels);
+
+      const renamed = await call(
+        'PATCH',
+        `/alert-rules/${id}`,
+        { roles: ['authority'], orgId: authorityOrg },
+        { name: 'Harbour master (renamed)' },
+      );
+      expect(renamed.statusCode, renamed.body).toBe(200);
+    });
+
+    it('refuses null fields in a PATCH with 400 VALIDATION_FAILED', async () => {
+      const created = await call('POST', '/alert-rules', managerA, {
+        ...rule,
+        enabled: false,
+      });
+      const { id } = RuleSchema.parse(created.json());
+      for (const field of [
+        'name',
+        'channels',
+        'types',
+        'enabled',
+        'quietMinutes',
+        'scope',
+      ]) {
+        const response = await call('PATCH', `/alert-rules/${id}`, managerA, {
+          [field]: null,
+        });
+        expect(response.statusCode, `${field}: ${response.body}`).toBe(400);
+        const problem = ProblemSchema.parse(response.json());
+        expect(problem.code).toBe('VALIDATION_FAILED');
+      }
+      const unchanged = RuleSchema.parse(
+        (await call('GET', `/alert-rules/${id}`, managerA)).json(),
+      );
+      expect(unchanged).toMatchObject({ name: rule.name, enabled: false });
     });
 
     it('requires alert_rule:write and an organization', async () => {

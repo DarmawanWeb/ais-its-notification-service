@@ -22,5 +22,6 @@ import { DeliveryPlanner } from './delivery-planner.js';
     AlertsConsumer,
     DeliveryPlanner,
   ],
+  exports: [AlertsRepository],
 })
 export class AlertsModule {}

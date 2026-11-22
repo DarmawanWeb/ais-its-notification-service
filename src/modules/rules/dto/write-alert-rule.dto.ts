@@ -24,7 +24,6 @@ import {
   IsBoolean,
   IsIn,
   IsInt,
-  IsOptional,
   IsString,
   IsUUID,
   Length,
@@ -34,6 +33,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 
+import { OptionalNotNull } from '../../../common/optional-not-null.js';
 import type { RuleScope } from '../../../domain/alert-rules.js';
 import { MAX_TARGET_LENGTH } from '../../deliveries/channels/targets.js';
 
@@ -76,10 +76,10 @@ export class CreateAlertRuleDto {
   @ApiPropertyOptional({
     enum: ['org', 'all'],
     description:
-      'org: vessels of the organization; all: every vessel (authority and super_admin only). ' +
-      'Default all for authority principals, else org.',
+      'org: vessels of the organization; all: every vessel (only rules of an authority organization, ' +
+      'written by its authority members). Default all for those, else org.',
   })
-  @IsOptional()
+  @OptionalNotNull()
   @IsIn(['org', 'all'])
   readonly scope?: RuleScope;
 
@@ -88,7 +88,7 @@ export class CreateAlertRuleDto {
     example: ['ews', 'collision'],
     default: [],
   })
-  @IsOptional()
+  @OptionalNotNull()
   @IsArray()
   @ArrayMaxSize(32)
   @ArrayUnique()
@@ -96,19 +96,19 @@ export class CreateAlertRuleDto {
   readonly types?: string[];
 
   @ApiPropertyOptional({ enum: ALERT_DOMAINS, isArray: true, default: [] })
-  @IsOptional()
+  @OptionalNotNull()
   @IsArray()
   @ArrayUnique()
   @IsIn(ALERT_DOMAINS, { each: true })
   readonly domains?: AlertDomain[];
 
   @ApiPropertyOptional({ enum: ALERT_SEVERITIES, default: 'info' })
-  @IsOptional()
+  @OptionalNotNull()
   @IsIn(ALERT_SEVERITIES)
   readonly minSeverity?: AlertSeverity;
 
   @ApiPropertyOptional({ type: [Number], example: [525005223], default: [] })
-  @IsOptional()
+  @OptionalNotNull()
   @IsArray()
   @ArrayMaxSize(500)
   @ArrayUnique()
@@ -118,7 +118,7 @@ export class CreateAlertRuleDto {
   readonly mmsi?: number[];
 
   @ApiPropertyOptional({ type: [String], format: 'uuid', default: [] })
-  @IsOptional()
+  @OptionalNotNull()
   @IsArray()
   @ArrayMaxSize(100)
   @ArrayUnique()
@@ -134,7 +134,7 @@ export class CreateAlertRuleDto {
   readonly channels!: RuleChannelDto[];
 
   @ApiPropertyOptional({ enum: LOCALES, default: 'id' })
-  @IsOptional()
+  @OptionalNotNull()
   @IsIn(LOCALES)
   readonly locale?: Locale;
 
@@ -145,14 +145,14 @@ export class CreateAlertRuleDto {
     description:
       'Quiet period, minutes: an alert is not notified again by this rule within it unless its severity rises',
   })
-  @IsOptional()
+  @OptionalNotNull()
   @IsInt()
   @Min(0)
   @Max(10_080)
   readonly quietMinutes?: number;
 
   @ApiPropertyOptional({ default: true })
-  @IsOptional()
+  @OptionalNotNull()
   @IsBoolean()
   readonly enabled?: boolean;
 
@@ -161,15 +161,17 @@ export class CreateAlertRuleDto {
     description:
       'Owning organization (super_admin only; default the active organization)',
   })
-  @IsOptional()
+  @OptionalNotNull()
   @IsUUID()
   readonly orgId?: string;
 }
 
 /**
- * `PATCH /alert-rules/:id`: every field optional. The organization cannot
- * change (`orgId` is not whitelisted, so it is refused with 400).
+ * `PATCH /alert-rules/:id`: every field optional, none nullable (an absent
+ * field keeps its value; `null` is refused with 400). The organization
+ * cannot change (`orgId` is not whitelisted, so it is refused with 400).
  */
 export class UpdateAlertRuleDto extends PartialType(
   OmitType(CreateAlertRuleDto, ['orgId'] as const),
+  { skipNullProperties: false },
 ) {}

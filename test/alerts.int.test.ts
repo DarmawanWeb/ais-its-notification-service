@@ -15,7 +15,9 @@ import {
 import {
   type FakeServer,
   MailpitClient,
+  type SlowServer,
   startFakeServer,
+  startSlowServer,
   TELEGRAM_OK,
   telegramMessages,
 } from './support/receivers.js';
@@ -113,6 +115,8 @@ describe('alert inbox and deliveries', () => {
         TELEGRAM_API_BASE: telegram.url,
         DELIVERY_RETRY_BASE_MS: '200',
         DELIVERY_POLL_INTERVAL_MS: '100',
+        // A total deadline per webhook attempt (slow receivers below).
+        WEBHOOK_TIMEOUT_MS: '3000',
       },
     });
     vessel = uniqueMmsi();
@@ -356,6 +360,193 @@ describe('alert inbox and deliveries', () => {
         'UPDATE alert_rules SET enabled = false WHERE id = $1',
         [authorityRule],
       );
+    }
+  });
+  it('merges into an unresolved alert whose chunk is compressed, and resolves it', async () => {
+    const longAgo = new Date(Date.now() - 120 * 86_400_000);
+    const first = alertRaised(vessel, {
+      dedupKey: `ews:${vessel}:compressed`,
+      occurredAt: longAgo.toISOString(),
+    });
+    await raiseAlert(service, first);
+    await storedAlert(service, first.dedupKey);
+    await service.pool.query(
+      `SELECT compress_chunk(c, if_not_compressed => true)
+         FROM show_chunks('alerts', older_than => interval '90 days') c`,
+    );
+    const { rows: chunks } = await service.pool.query<{
+      is_compressed: boolean;
+    }>(
+      `SELECT is_compressed FROM timescaledb_information.chunks
+        WHERE hypertable_name = 'alerts'
+          AND $1::timestamptz >= range_start AND $1::timestamptz < range_end`,
+      [longAgo],
+    );
+    expect(chunks).toEqual([{ is_compressed: true }]);
+
+    // Locking compressed tuples is not supported: the merge must not need it.
+    await raiseAlert(
+      service,
+      alertRaised(vessel, {
+        dedupKey: first.dedupKey,
+        severity: 'critical',
+        title: 'Anchored 420 m from the pipeline',
+      }),
+    );
+    const merged = await storedAlert(
+      service,
+      first.dedupKey,
+      (row) => row.occurrences === 2,
+    );
+    expect(merged).toMatchObject({
+      id: first.id,
+      severity: 'critical',
+      status: 'open',
+      title: 'Anchored 420 m from the pipeline',
+    });
+    // The escalation is notified on every channel of the rule.
+    await waitFor(async () => (await deliveriesOf(first.id)).length === 6);
+
+    const resolved = await service.app.inject({
+      method: 'POST',
+      url: `/api/v2/alerts/${first.id}/resolve`,
+      headers: await service.authorization({
+        roles: ['fleet_manager'],
+        orgId: orgA,
+      }),
+    });
+    expect(resolved.statusCode, resolved.body).toBe(200);
+    const again = alertRaised(vessel, { dedupKey: first.dedupKey });
+    await raiseAlert(service, again);
+    expect(
+      await storedAlert(service, first.dedupKey, (row) => row.id === again.id),
+    ).toMatchObject({ status: 'open', occurrences: 1 });
+  });
+
+  it('applies an occurrence again when its alert is resolved during the merge', async () => {
+    const first = alertRaised(vessel, { dedupKey: `ews:${vessel}:race` });
+    await raiseAlert(service, first);
+    await storedAlert(service, first.dedupKey);
+    const second = alertRaised(vessel, { dedupKey: first.dedupKey });
+
+    const client = await service.pool.connect();
+    try {
+      // A resolve as POST /alerts/:id/resolve writes it, not committed yet.
+      await client.query('BEGIN');
+      await client.query(
+        `UPDATE alerts SET status = 'resolved', resolved_at = now() WHERE id = $1`,
+        [first.id],
+      );
+      await client.query('DELETE FROM open_alerts WHERE dedup_key = $1', [
+        first.dedupKey,
+      ]);
+      await raiseAlert(service, second);
+      // The merge read the open alert and waits for the resolve's row lock.
+      await waitFor(async () => {
+        const { rowCount } = await service.pool.query(
+          `SELECT 1 FROM pg_stat_activity
+            WHERE wait_event_type = 'Lock' AND query ILIKE 'update "notify"."alerts"%'`,
+        );
+        return (rowCount ?? 0) > 0;
+      });
+      await client.query('COMMIT');
+    } finally {
+      client.release();
+    }
+
+    // The status changed under the merge: the occurrence starts a new alert.
+    expect(
+      await storedAlert(service, first.dedupKey, (row) => row.id === second.id),
+    ).toMatchObject({ status: 'open', occurrences: 1 });
+    const { rows } = await service.pool.query<{
+      status: string;
+      occurrences: number;
+    }>('SELECT status, occurrences FROM alerts WHERE id = $1', [first.id]);
+    expect(rows).toEqual([{ status: 'resolved', occurrences: 1 }]);
+  });
+
+  it('keeps delivering to other tenants while webhook receivers are slow', async () => {
+    const stalling: SlowServer = await startSlowServer('stall');
+    const dripping: SlowServer = await startSlowServer('drip');
+    const orgC = newId();
+    const orgD = newId();
+    const vesselC = uniqueMmsi();
+    const vesselD = uniqueMmsi();
+    try {
+      await registerVessel(service, { mmsi: vesselC, orgId: orgC });
+      await registerVessel(service, { mmsi: vesselD, orgId: orgD });
+      await createRule(
+        { roles: ['fleet_manager'], orgId: orgC },
+        {
+          name: 'Slow receivers',
+          channels: [
+            { type: 'webhook', target: `${stalling.url}/hook` },
+            { type: 'webhook', target: `${dripping.url}/hook` },
+          ],
+        },
+      );
+      await createRule(
+        { roles: ['fleet_manager'], orgId: orgD },
+        {
+          name: 'Normal receiver',
+          channels: [{ type: 'webhook', target: `${webhook.url}/org-d` }],
+        },
+      );
+      const statusOf = async (alertId: string) => {
+        const { rows } = await service.pool.query<{
+          target: string;
+          status: string;
+          attempts: number;
+          error: string | null;
+        }>(
+          'SELECT target, status, attempts, error FROM deliveries WHERE alert_id = $1',
+          [alertId],
+        );
+        return rows;
+      };
+
+      const alertC = alertRaised(vesselC, { dedupKey: `ews:${vesselC}:slow` });
+      await raiseAlert(service, alertC);
+      await waitFor(() => stalling.received() === 1);
+
+      // Org D is served while org C's stalled attempt holds its slot.
+      const alertD = alertRaised(vesselD, { dedupKey: `ews:${vesselD}:slow` });
+      await raiseAlert(service, alertD);
+      await waitFor(async () => {
+        const rows = await statusOf(alertD.id);
+        return rows.length === 1 && rows[0]?.status === 'sent';
+      });
+      const during = await statusOf(alertC.id);
+      expect(
+        during.find((row) => row.target.startsWith(stalling.url))?.status,
+      ).toBe('sending');
+      // 200 at once: sent, and its dripping body is not waited for.
+      await waitFor(async () =>
+        (await statusOf(alertC.id)).some(
+          (row) => row.target.startsWith(dripping.url) && row.status === 'sent',
+        ),
+      );
+      await waitFor(() => dripping.connectionLifetimesMs.length > 0);
+      expect(dripping.connectionLifetimesMs[0]).toBeLessThan(2_000);
+
+      // The stalled attempt ends at its deadline and is scheduled again.
+      const timedOut = await waitFor(
+        async () =>
+          (await statusOf(alertC.id)).find(
+            (entry) =>
+              entry.target.startsWith(stalling.url) &&
+              entry.error === 'Webhook unreachable: ETIMEDOUT',
+          ),
+        { timeoutMs: 15_000 },
+      );
+      expect(timedOut.status).not.toBe('sent');
+    } finally {
+      await service.pool.query(
+        'UPDATE alert_rules SET enabled = false WHERE org_id = ANY($1::uuid[])',
+        [[orgC, orgD]],
+      );
+      await stalling.close();
+      await dripping.close();
     }
   });
 });

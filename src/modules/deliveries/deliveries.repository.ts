@@ -4,9 +4,11 @@ import {
   and,
   desc,
   eq,
+  gte,
   inArray,
   lt,
   lte,
+  notExists,
   or,
   type SQL,
   sql,
@@ -17,7 +19,7 @@ import type { LastNotification } from '../../domain/alert-rules.js';
 import type { RuleTenancy } from '../rules/alert-rule.js';
 import type { Delivery, DeliveryCursor, DeliveryFilter } from './delivery.js';
 
-const { alertRules, deliveries } = schema;
+const { alertRules, deliveries, emailLog } = schema;
 
 /** Drizzle database of the service, or of one transaction. */
 export type Executor = Database<typeof schema>;
@@ -154,8 +156,9 @@ export class DeliveriesRepository {
   async completeQueued(
     id: string,
     outcome: { sent: true } | { sent: false; error: string },
+    executor: Executor = this.db,
   ): Promise<void> {
-    await this.db
+    await executor
       .update(deliveries)
       .set(
         outcome.sent
@@ -173,6 +176,49 @@ export class DeliveriesRepository {
           inArray(deliveries.status, ['queued', 'sending', 'pending']),
         ),
       );
+  }
+
+  /**
+   * Alert e-mails `queued` since before `before` whose request has no final
+   * (`sent` / `failed`) or recent `email_log` row: their NOTIFY request was
+   * lost (e.g. a purged stream) — the e-mail consumer finishes every request
+   * it receives, dead-lettered ones as `failed`.
+   */
+  async lostQueuedEmails(before: Date, limit: number): Promise<Delivery[]> {
+    return this.db
+      .select()
+      .from(deliveries)
+      .where(
+        and(
+          eq(deliveries.status, 'queued'),
+          eq(deliveries.channel, 'email'),
+          lt(deliveries.updatedAt, before),
+          notExists(
+            this.db
+              .select({ id: emailLog.id })
+              .from(emailLog)
+              .where(
+                and(
+                  eq(emailLog.id, deliveries.id),
+                  or(
+                    inArray(emailLog.status, ['sent', 'failed']),
+                    gte(emailLog.updatedAt, before),
+                  ),
+                ),
+              ),
+          ),
+        ),
+      )
+      .orderBy(deliveries.updatedAt)
+      .limit(limit);
+  }
+
+  /** Marks a queued e-mail as queued again now (the next check waits from here). */
+  async touchQueued(id: string): Promise<void> {
+    await this.db
+      .update(deliveries)
+      .set({ updatedAt: sql`now()` })
+      .where(and(eq(deliveries.id, id), eq(deliveries.status, 'queued')));
   }
 
   /** Deliveries of rules in `tenancy`, newest first. */

@@ -12,8 +12,10 @@ import {
   eq,
   gte,
   inArray,
+  isNull,
+  lt,
   lte,
-  ne,
+  notExists,
   or,
   type SQL,
   sql,
@@ -32,7 +34,7 @@ import type {
   InboxAlert,
 } from './alert.js';
 
-const { alerts, vessels } = schema;
+const { alerts, openAlerts, vessels } = schema;
 
 /** A new inbox alert (the database fills the timestamps). */
 export type NewInboxAlert = Omit<InboxAlert, 'createdAt' | 'updatedAt'>;
@@ -49,22 +51,52 @@ export type Executor = Database<typeof schema>;
 export class AlertsRepository {
   constructor(@InjectDb() private readonly db: Executor) {}
 
-  /** The unresolved alert of a dedup key, locked for the merge (`FOR UPDATE`). */
-  async findUnresolvedForUpdate(
+  /**
+   * The unresolved alert of a dedup key, found through `open_alerts` and read
+   * by primary key and mmsi (its compression segment) without a row lock:
+   * TimescaleDB cannot lock tuples of compressed chunks, and the consumer's
+   * advisory lock already serializes the occurrences of a key. An entry whose
+   * alert is gone (dropped by the retention policy) or resolved is removed,
+   * so the next occurrence starts a new alert.
+   */
+  async findUnresolved(
     executor: Executor,
     dedupKey: string,
   ): Promise<InboxAlert | undefined> {
+    const [entry] = await executor
+      .select()
+      .from(openAlerts)
+      .where(eq(openAlerts.dedupKey, dedupKey))
+      .limit(1);
+    if (entry === undefined) return undefined;
     const [row] = await executor
       .select()
       .from(alerts)
-      .where(and(eq(alerts.dedupKey, dedupKey), ne(alerts.status, 'resolved')))
-      .orderBy(desc(alerts.occurredAt))
-      .limit(1)
-      .for('update');
-    return row;
+      .where(
+        and(
+          eq(alerts.id, entry.alertId),
+          eq(alerts.occurredAt, entry.occurredAt),
+          eq(alerts.mmsi, entry.mmsi),
+        ),
+      )
+      .limit(1);
+    if (row !== undefined && row.status !== 'resolved') return row;
+    await executor
+      .delete(openAlerts)
+      .where(
+        and(
+          eq(openAlerts.dedupKey, dedupKey),
+          eq(openAlerts.alertId, entry.alertId),
+        ),
+      );
+    return undefined;
   }
 
-  /** Inserts a new alert; `undefined` when an alert with its id and time exists. */
+  /**
+   * Inserts a new (open) alert and its `open_alerts` entry.
+   *
+   * @returns `undefined` when an alert with its id and time exists already
+   */
   async insert(
     executor: Executor,
     alert: NewInboxAlert,
@@ -74,16 +106,30 @@ export class AlertsRepository {
       .values({ ...alert })
       .onConflictDoNothing()
       .returning();
+    if (row === undefined) return undefined;
+    await executor.insert(openAlerts).values({
+      dedupKey: row.dedupKey,
+      alertId: row.id,
+      occurredAt: row.occurredAt,
+      mmsi: row.mmsi,
+    });
     return row;
   }
 
-  /** Writes a merged occurrence into the stored alert. */
+  /**
+   * Writes a merged occurrence into the stored alert if its status is still
+   * the one the merge read (a concurrent acknowledge or resolve wins; merges
+   * of one key are serialized by the consumer's advisory lock, so the status
+   * is a complete concurrency token).
+   *
+   * @returns the updated alert, or `undefined` when its status changed meanwhile
+   */
   async updateMerged(
     executor: Executor,
-    stored: Pick<InboxAlert, 'id' | 'occurredAt'>,
+    stored: Pick<InboxAlert, 'id' | 'occurredAt' | 'mmsi' | 'status'>,
     merged: MergeableAlert,
     orgId: string | null,
-  ): Promise<InboxAlert> {
+  ): Promise<InboxAlert | undefined> {
     const [row] = await executor
       .update(alerts)
       .set({
@@ -104,12 +150,8 @@ export class AlertsRepository {
         ...(orgId === null ? {} : { orgId }),
         updatedAt: sql`now()`,
       })
-      .where(
-        and(eq(alerts.id, stored.id), eq(alerts.occurredAt, stored.occurredAt)),
-      )
+      .where(and(identifies(stored), eq(alerts.status, stored.status)))
       .returning();
-    if (row === undefined)
-      throw new Error(`Alert ${stored.id} vanished during a merge`);
     return row;
   }
 
@@ -181,34 +223,72 @@ export class AlertsRepository {
   }
 
   /**
-   * Applies a lifecycle change if the alert is still in `expectedStatus`
-   * (optimistic concurrency with concurrent actions and merges).
+   * Applies a lifecycle change if the alert is still in the status that was
+   * read (optimistic concurrency with merges and other actions); resolving
+   * removes the `open_alerts` entry in the same transaction, so the next
+   * occurrence of the dedup key starts a new alert.
    *
    * @returns the updated alert, or `undefined` when its status changed meanwhile
    */
   async updateLifecycle(
-    alert: Pick<InboxAlert, 'id' | 'occurredAt' | 'status'>,
+    alert: Pick<InboxAlert, 'id' | 'occurredAt' | 'mmsi' | 'status'>,
     lifecycle: AlertLifecycle,
   ): Promise<InboxAlert | undefined> {
-    const [row] = await this.db
-      .update(alerts)
-      .set({
-        status: lifecycle.status,
-        acknowledgedBy: lifecycle.acknowledgedBy,
-        acknowledgedAt: lifecycle.acknowledgedAt,
-        resolvedBy: lifecycle.resolvedBy,
-        resolvedAt: lifecycle.resolvedAt,
-        updatedAt: sql`now()`,
-      })
+    return this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(alerts)
+        .set({
+          status: lifecycle.status,
+          acknowledgedBy: lifecycle.acknowledgedBy,
+          acknowledgedAt: lifecycle.acknowledgedAt,
+          resolvedBy: lifecycle.resolvedBy,
+          resolvedAt: lifecycle.resolvedAt,
+          updatedAt: sql`now()`,
+        })
+        .where(and(identifies(alert), eq(alerts.status, alert.status)))
+        .returning();
+      if (row?.status === 'resolved') {
+        await tx
+          .delete(openAlerts)
+          .where(
+            and(
+              eq(openAlerts.dedupKey, row.dedupKey),
+              eq(openAlerts.alertId, row.id),
+            ),
+          );
+      }
+      return row;
+    });
+  }
+
+  /**
+   * Removes `open_alerts` entries older than `before` whose alert row no
+   * longer exists (its chunk was dropped by the retention policy while the
+   * alert was unresolved).
+   *
+   * @returns the number of entries removed
+   */
+  async pruneOrphanedOpenAlerts(before: Date): Promise<number> {
+    const rows = await this.db
+      .delete(openAlerts)
       .where(
         and(
-          eq(alerts.id, alert.id),
-          eq(alerts.occurredAt, alert.occurredAt),
-          eq(alerts.status, alert.status),
+          lt(openAlerts.occurredAt, before),
+          notExists(
+            this.db
+              .select({ id: alerts.id })
+              .from(alerts)
+              .where(
+                and(
+                  eq(alerts.id, openAlerts.alertId),
+                  eq(alerts.occurredAt, openAlerts.occurredAt),
+                ),
+              ),
+          ),
         ),
       )
-      .returning();
-    return row;
+      .returning({ dedupKey: openAlerts.dedupKey });
+    return rows.length;
   }
 
   /** Tenancy of spec §8.5 as a SQL condition. */
@@ -222,7 +302,9 @@ export class AlertsRepository {
         const owned = this.db
           .select({ mmsi: vessels.mmsi })
           .from(vessels)
-          .where(eq(vessels.orgId, scope.orgId));
+          .where(
+            and(eq(vessels.orgId, scope.orgId), isNull(vessels.deletedAt)),
+          );
         return or(
           inArray(alerts.mmsi, owned),
           inArray(alerts.relatedMmsi, owned),
@@ -230,6 +312,20 @@ export class AlertsRepository {
       }
     }
   }
+}
+
+/**
+ * The row of an alert: primary key plus mmsi, the compression segment, so a
+ * write to an old alert only decompresses its own segment.
+ */
+function identifies(
+  alert: Pick<InboxAlert, 'id' | 'occurredAt' | 'mmsi'>,
+): SQL | undefined {
+  return and(
+    eq(alerts.id, alert.id),
+    eq(alerts.occurredAt, alert.occurredAt),
+    eq(alerts.mmsi, alert.mmsi),
+  );
 }
 
 function filterConditions(filter: AlertFilter): (SQL | undefined)[] {

@@ -78,15 +78,13 @@ interface HttpOutcome {
   readonly retryAfter: string | undefined;
 }
 
-/** Largest response body read (and discarded) from a receiver. */
-const MAX_RESPONSE_BYTES = 64 * 1024;
-
 /**
  * Webhook channel: `POST` of a JSON body signed with
  * `X-AIS-ITS-Signature: sha256=<hex HMAC-SHA256 of "<timestamp>.<body>">`
  * and `X-AIS-ITS-Timestamp` (spec §13.9), plus `X-AIS-ITS-Delivery` for
- * receiver-side deduplication. Redirects are not followed; loopback and
- * private targets are refused unless `WEBHOOK_ALLOW_PRIVATE_TARGETS`.
+ * receiver-side deduplication. Each attempt has a total deadline
+ * (`WEBHOOK_TIMEOUT_MS`); redirects are not followed; loopback and private
+ * targets are refused unless `WEBHOOK_ALLOW_PRIVATE_TARGETS`.
  */
 @Injectable()
 export class WebhookChannel {
@@ -162,6 +160,13 @@ export class WebhookChannel {
     }
   }
 
+  /**
+   * One POST under a total deadline of `WEBHOOK_TIMEOUT_MS` covering DNS,
+   * connect, TLS, the request and the response head. The outcome is the
+   * status line: the response body is never read (the socket is destroyed
+   * at once), so a receiver that answers slowly or drips its body cannot
+   * hold the attempt — and with it a worker slot — beyond the deadline.
+   */
   private exchange(
     target: URL,
     raw: string,
@@ -178,30 +183,24 @@ export class WebhookChannel {
             ...headers,
             'content-length': String(Buffer.byteLength(raw)),
           },
-          timeout: this.config.WEBHOOK_TIMEOUT_MS,
           ...(allowPrivate ? {} : { lookup: guardedLookup }),
         },
         (response: IncomingMessage) => {
-          let received = 0;
-          response.on('data', (chunk: Buffer) => {
-            received += chunk.length;
-            if (received > MAX_RESPONSE_BYTES) response.destroy();
-          });
-          const settle = (): void => {
-            const retryAfter = response.headers['retry-after'];
-            resolve({ status: response.statusCode ?? 0, retryAfter });
-          };
-          response.on('end', settle);
-          response.on('close', settle);
-          response.on('error', settle);
+          clearTimeout(deadline);
+          const retryAfter = response.headers['retry-after'];
+          resolve({ status: response.statusCode ?? 0, retryAfter });
+          response.destroy();
         },
       );
-      request.on('timeout', () => {
+      const deadline = setTimeout(() => {
         request.destroy(
           Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }),
         );
+      }, this.config.WEBHOOK_TIMEOUT_MS);
+      request.on('error', (error) => {
+        clearTimeout(deadline);
+        reject(error);
       });
-      request.on('error', reject);
       request.end(raw);
     });
   }

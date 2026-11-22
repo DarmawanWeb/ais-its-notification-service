@@ -6,8 +6,9 @@ import {
 } from '@darmawanweb/ais-its-contracts/domain';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
-import { IsIn, IsOptional, IsString, Length } from 'class-validator';
+import { IsIn, IsString, Length } from 'class-validator';
 
+import { OptionalNotNull } from '../../../common/optional-not-null.js';
 import { trimString } from '../../rules/dto/write-alert-rule.dto.js';
 import { MAX_TARGET_LENGTH } from '../channels/targets.js';
 import type { TestNotificationResult } from '../notifications.service.js';
@@ -29,7 +30,7 @@ export class TestNotificationDto {
   readonly target!: string;
 
   @ApiPropertyOptional({ enum: LOCALES, default: 'id' })
-  @IsOptional()
+  @OptionalNotNull()
   @IsIn(LOCALES)
   readonly locale?: Locale;
 }
