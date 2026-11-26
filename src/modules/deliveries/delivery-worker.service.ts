@@ -14,6 +14,7 @@ import { type ChannelResult, failed } from './channels/channel-result.js';
 import { EmailChannel } from './channels/email.channel.js';
 import { TelegramChannel } from './channels/telegram.channel.js';
 import { WebhookChannel } from './channels/webhook.channel.js';
+import { WebhookKeysRepository } from './channels/webhook-keys.repository.js';
 import { DeliveriesRepository } from './deliveries.repository.js';
 import {
   type Delivery,
@@ -61,6 +62,7 @@ export class DeliveryWorker
     private readonly email: EmailChannel,
     private readonly telegram: TelegramChannel,
     private readonly webhook: WebhookChannel,
+    private readonly webhookKeys: WebhookKeysRepository,
     private readonly metrics: NotificationMetrics,
     @InjectConfig() private readonly config: Config,
   ) {
@@ -261,7 +263,7 @@ export class DeliveryWorker
     );
   }
 
-  private send(
+  private async send(
     delivery: Delivery,
     payload: DeliveryPayload,
   ): Promise<ChannelResult> {
@@ -271,10 +273,12 @@ export class DeliveryWorker
       case 'telegram':
         return this.telegram.send(delivery.target, telegramText(payload));
       case 'webhook':
+        // The channel's current key (a rotation applies to pending deliveries too).
         return this.webhook.post(
           delivery.target,
           webhookAlertBody(delivery, payload, new Date()),
           delivery.id,
+          await this.webhookKeys.signingKey(delivery.ruleId, delivery.target),
         );
     }
   }

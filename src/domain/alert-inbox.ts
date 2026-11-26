@@ -64,8 +64,6 @@ export interface MergeResult {
  *   acknowledgement cleared) so that the escalation is seen; without an
  *   escalation it stays acknowledged.
  *
- * Proposed method id (not yet in docs/references/methods.json).
- *
  * @method notify.alert_dedup_merge
  * @see ../../../../docs/PLATFORM_SPEC.md §13.9 — "alerts with the same
  *   dedup_key while open are merged (occurrences++)"
@@ -134,12 +132,11 @@ export type AlertTransition =
   | { readonly rejected: 'ALERT_ALREADY_RESOLVED' };
 
 /**
- * Lifecycle of an inbox alert: `open → acknowledged → resolved`, and
- * `open → resolved`. Both actions are idempotent (acknowledging an
+ * Lifecycle of an inbox alert by users: `open → acknowledged → resolved`,
+ * and `open → resolved`. Both actions are idempotent (acknowledging an
  * acknowledged alert or resolving a resolved one changes nothing); a resolved
- * alert cannot be acknowledged.
- *
- * Proposed method id (not yet in docs/references/methods.json).
+ * alert cannot be acknowledged. Detectors resolve with
+ * {@link resolveByDetector}.
  *
  * @method notify.alert_lifecycle
  * @see ../../../../docs/PLATFORM_SPEC.md §13.9 — `status` open / acknowledged / resolved, `POST /alerts/:id/ack|resolve`
@@ -180,6 +177,59 @@ export function transitionAlert(
       status: 'resolved',
       resolvedBy: actorId,
       resolvedAt: at,
+    },
+  };
+}
+
+/** The part of an unresolved inbox alert a detector resolution reads. */
+export interface ResolvableAlert extends AlertLifecycle {
+  /** Latest merged occurrence (event time). */
+  readonly lastOccurredAt: Date;
+}
+
+/** Outcome of {@link resolveByDetector}. */
+export type DetectorResolution =
+  | { readonly resolved: true; readonly lifecycle: AlertLifecycle }
+  | {
+      readonly resolved: false;
+      /**
+       * `already_resolved`: a user (or an earlier resolution) closed it;
+       * `later_occurrence`: it merged an occurrence after the end of the
+       * condition (a re-raise), so it stays open.
+       */
+      readonly ignored: 'already_resolved' | 'later_occurrence';
+    };
+
+/**
+ * A detector's resolution (`alert.resolved.v1`) of the unresolved (open or
+ * acknowledged) inbox alert of its dedup key: the alert becomes `resolved`
+ * at the end of the condition (`resolvedAt`, event time) by the system
+ * (`resolvedBy` = `null`), keeping its acknowledgement — unless it merged an
+ * occurrence later than `resolvedAt` (`lastOccurredAt > resolvedAt`, e.g. a
+ * re-raise handled before a redelivered resolution), which keeps it open. A
+ * resolution at the exact time of the latest occurrence resolves.
+ *
+ * @method notify.alert_lifecycle
+ * @see ../../../../docs/PLATFORM_SPEC.md §13.9, §18 — resolution events
+ * @param current - the stored unresolved alert of the resolution's dedup key
+ * @param resolvedAt - `resolvedAt` of the `alert.resolved.v1`
+ */
+export function resolveByDetector(
+  current: ResolvableAlert,
+  resolvedAt: Date,
+): DetectorResolution {
+  if (current.status === 'resolved')
+    return { resolved: false, ignored: 'already_resolved' };
+  if (current.lastOccurredAt.getTime() > resolvedAt.getTime())
+    return { resolved: false, ignored: 'later_occurrence' };
+  return {
+    resolved: true,
+    lifecycle: {
+      status: 'resolved',
+      acknowledgedBy: current.acknowledgedBy,
+      acknowledgedAt: current.acknowledgedAt,
+      resolvedBy: null,
+      resolvedAt,
     },
   };
 }

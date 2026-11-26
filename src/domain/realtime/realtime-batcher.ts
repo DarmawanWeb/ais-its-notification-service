@@ -79,8 +79,6 @@ export type RoomActivity = (room: string) => boolean;
  * each with the latest item per vessel. Rooms without members are skipped
  * when items arrive and when windows end.
  *
- * Proposed method id (not yet in docs/references/methods.json).
- *
  * @method notify.realtime_batching
  * @see ../../../../../docs/PLATFORM_SPEC.md §9 — `positions` / `safety:states`, 1 s and 5 s windows
  */

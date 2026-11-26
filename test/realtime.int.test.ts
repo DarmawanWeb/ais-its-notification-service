@@ -15,17 +15,23 @@ import {
   roomsForViewport,
   SafetyStatesBatchSchema,
 } from '@darmawanweb/ais-its-contracts/realtime';
-import { waitFor } from '@darmawanweb/ais-its-nest/testing';
+import {
+  makeTestVesselSnapshot,
+  waitFor,
+} from '@darmawanweb/ais-its-nest/testing';
 import { io, type Socket } from 'socket.io-client';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import * as z from 'zod';
 
 import {
   alertRaised,
+  alertResolved,
   positionEvent,
   raiseAlert,
   registerVessel,
+  resolveAlert,
   safetyStateEvent,
+  storedAlert,
   uniqueMmsi,
 } from './support/fixtures.js';
 import { startTestService, type TestService } from './support/test-service.js';
@@ -418,6 +424,80 @@ describe('realtime gateway at /ws (spec §9)', () => {
     }
     expect(received(other, 'alert:raised')).toEqual([]);
     expect(received(other, 'alert:updated')).toEqual([]);
+  });
+
+  it('pushes the updates of an alert to the current owner only after the vessel changed owner', async () => {
+    const mmsi = uniqueMmsi();
+    const vesselId = await registerVessel(service, { mmsi, orgId: orgA });
+    const alert = alertRaised(mmsi, { dedupKey: `ews:${mmsi}:sold` });
+    await raiseAlert(service, alert);
+    await storedAlert(service, alert.dedupKey);
+    // The vessel is sold to organization B (a newer FLEET snapshot).
+    await service.publisher.publishEvent(
+      EVENT_TYPES.FLEET_VESSEL_UPSERTED,
+      makeTestVesselSnapshot({
+        id: vesselId,
+        mmsi,
+        orgId: orgB,
+        name: 'KM Terjual',
+        updatedAt: new Date(Date.now() + 1_000).toISOString(),
+      }),
+    );
+    await waitFor(async () => {
+      const { rows } = await service.pool.query<{ org_id: string }>(
+        'SELECT org_id FROM vessels WHERE vessel_id = $1',
+        [vesselId],
+      );
+      return rows[0]?.org_id === orgB;
+    });
+    const formerOwner = await connect({ roles: ['viewer'], orgId: orgA });
+    const newOwner = await connect({ roles: ['viewer'], orgId: orgB });
+    const pushed = (id: string, status?: string) => (payload: unknown) => {
+      const realtime = RealtimeAlertSchema.parse(payload);
+      return (
+        realtime.id === id &&
+        (status === undefined || realtime.status === status)
+      );
+    };
+    // Visibility follows the current owner (spec §8.5) ...
+    const read = await service.app.inject({
+      method: 'GET',
+      url: `/api/v2/alerts/${alert.id}`,
+      headers: await service.authorization({ roles: ['viewer'], orgId: orgA }),
+    });
+    expect(read.statusCode).toBe(404);
+
+    // ... and so do the pushes: an acknowledge over REST and the detector's resolution.
+    const ack = await service.app.inject({
+      method: 'POST',
+      url: `/api/v2/alerts/${alert.id}/ack`,
+      headers: await service.authorization({
+        roles: ['fleet_manager'],
+        orgId: orgB,
+      }),
+    });
+    expect(ack.statusCode, ack.body).toBe(200);
+    await nextEvent(
+      newOwner,
+      'alert:updated',
+      pushed(alert.id, 'acknowledged'),
+    );
+    await resolveAlert(service, alertResolved(alert));
+    await nextEvent(newOwner, 'alert:updated', pushed(alert.id, 'resolved'));
+
+    // An alert of a vessel the former owner still has, pushed after both: the
+    // pushes of one instance keep their order, so the updates would be there.
+    const kept = uniqueMmsi();
+    await registerVessel(service, { mmsi: kept, orgId: orgA });
+    const marker = alertRaised(kept, { dedupKey: `ews:${kept}:kept` });
+    await raiseAlert(service, marker);
+    await nextEvent(formerOwner, 'alert:raised', pushed(marker.id));
+    expect(
+      formerOwner.events.filter(
+        (entry) =>
+          entry.event.startsWith('alert:') && pushed(alert.id)(entry.payload),
+      ),
+    ).toEqual([]);
   });
 
   it('pushes cii:updated to the organization of the vessel', async () => {

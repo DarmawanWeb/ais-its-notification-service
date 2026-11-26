@@ -59,8 +59,6 @@ export interface AlertFacts {
  * 6. vessel: `mmsi` is empty or contains the alert's MMSI or related MMSI;
  * 7. zone: `zoneIds` is empty or contains the alert's zone.
  *
- * Proposed method id (not yet in docs/references/methods.json).
- *
  * @method notify.alert_rule_matching
  * @see ../../../../docs/PLATFORM_SPEC.md §13.9 and §8.5
  * @param rule - the rule criteria
@@ -112,8 +110,6 @@ export interface LastNotification {
  * rose above the last notified severity: escalations always notify. Other
  * alerts (other vessels, zones or conditions) are never held back, so a quiet
  * period cannot hide a new incident. `quietMinutes = 0` disables it.
- *
- * Proposed method id (not yet in docs/references/methods.json).
  *
  * @method notify.rule_quiet_period
  * @see ../../../../docs/PLATFORM_SPEC.md §13.9 — "per-rule quiet period"

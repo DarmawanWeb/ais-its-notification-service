@@ -14,6 +14,7 @@ import { MethodologyModule } from './modules/methodology/methodology.module.js';
 import { RealtimeModule } from './modules/realtime/realtime.module.js';
 import { RulesModule } from './modules/rules/rules.module.js';
 import { VesselsModule } from './modules/vessels/vessels.module.js';
+import { MIGRATIONS_DIR } from './service.js';
 
 /**
  * Root module. `bootstrapService()` wraps it in the kit's platform root module
@@ -23,8 +24,9 @@ import { VesselsModule } from './modules/vessels/vessels.module.js';
  */
 @Module({
   imports: [
-    // pg pool + drizzle (search_path=<DATABASE_SCHEMA>,public); migrations on boot.
-    DatabaseModule.forRoot({ schema }),
+    // pg pool + drizzle (search_path=<DATABASE_SCHEMA>,public); migrations on boot
+    // from this package's migrations/ (not the working directory).
+    DatabaseModule.forRoot({ schema, migrationsDir: MIGRATIONS_DIR }),
     // Streams this service PRODUCES to: NOTIFY (alert and test e-mails) and
     // AUDIT. The streams it consumes (ALERTS, FLEET, AIS_POSITION, SAFETY,
     // EMISSION) are only created when missing, never changed (spec §7.2).

@@ -1,6 +1,9 @@
-import { MetricsService } from '@darmawanweb/ais-its-nest/metrics';
+import {
+  type Counter,
+  type Gauge,
+  MetricsService,
+} from '@darmawanweb/ais-its-nest/metrics';
 import { Injectable } from '@nestjs/common';
-import type { Counter, Gauge } from 'prom-client';
 
 /**
  * Domain metrics of the service (spec §13.9, §10), prefix `aisits_`:
@@ -13,6 +16,11 @@ export class NotificationMetrics {
   readonly notificationsSent: Counter<'channel' | 'outcome'>;
   /** Alerts consumed from ALERTS (`outcome`: raised, merged, escalated, duplicate). */
   readonly alertsIngested: Counter<'outcome'>;
+  /**
+   * Resolutions consumed from ALERTS (`outcome`: resolved, not_found,
+   * later_occurrence, duplicate).
+   */
+  readonly alertResolutions: Counter<'outcome'>;
   /** Transactional e-mails (`outcome`: sent, retry, failed, duplicate). */
   readonly emails: Counter<'template' | 'outcome'>;
   /** Open socket.io connections of this instance. */
@@ -31,6 +39,11 @@ export class NotificationMetrics {
     this.alertsIngested = metrics.counter({
       name: 'alerts_ingested_total',
       help: 'alert.raised.v1 events consumed into the inbox, by outcome',
+      labelNames: ['outcome'],
+    });
+    this.alertResolutions = metrics.counter({
+      name: 'alert_resolutions_total',
+      help: 'alert.resolved.v1 events consumed into the inbox, by outcome',
       labelNames: ['outcome'],
     });
     this.emails = metrics.counter({

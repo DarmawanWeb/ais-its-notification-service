@@ -9,6 +9,7 @@ import {
   NOTIFICATION_CHANNELS,
   type NotificationChannel,
 } from '@darmawanweb/ais-its-contracts/domain';
+import { IsOptionalNotNull } from '@darmawanweb/ais-its-nest/http';
 import {
   ApiProperty,
   ApiPropertyOptional,
@@ -33,7 +34,6 @@ import {
   ValidateNested,
 } from 'class-validator';
 
-import { OptionalNotNull } from '../../../common/optional-not-null.js';
 import type { RuleScope } from '../../../domain/alert-rules.js';
 import { MAX_TARGET_LENGTH } from '../../deliveries/channels/targets.js';
 
@@ -79,7 +79,7 @@ export class CreateAlertRuleDto {
       'org: vessels of the organization; all: every vessel (only rules of an authority organization, ' +
       'written by its authority members). Default all for those, else org.',
   })
-  @OptionalNotNull()
+  @IsOptionalNotNull()
   @IsIn(['org', 'all'])
   readonly scope?: RuleScope;
 
@@ -88,7 +88,7 @@ export class CreateAlertRuleDto {
     example: ['ews', 'collision'],
     default: [],
   })
-  @OptionalNotNull()
+  @IsOptionalNotNull()
   @IsArray()
   @ArrayMaxSize(32)
   @ArrayUnique()
@@ -96,19 +96,19 @@ export class CreateAlertRuleDto {
   readonly types?: string[];
 
   @ApiPropertyOptional({ enum: ALERT_DOMAINS, isArray: true, default: [] })
-  @OptionalNotNull()
+  @IsOptionalNotNull()
   @IsArray()
   @ArrayUnique()
   @IsIn(ALERT_DOMAINS, { each: true })
   readonly domains?: AlertDomain[];
 
   @ApiPropertyOptional({ enum: ALERT_SEVERITIES, default: 'info' })
-  @OptionalNotNull()
+  @IsOptionalNotNull()
   @IsIn(ALERT_SEVERITIES)
   readonly minSeverity?: AlertSeverity;
 
   @ApiPropertyOptional({ type: [Number], example: [525005223], default: [] })
-  @OptionalNotNull()
+  @IsOptionalNotNull()
   @IsArray()
   @ArrayMaxSize(500)
   @ArrayUnique()
@@ -118,7 +118,7 @@ export class CreateAlertRuleDto {
   readonly mmsi?: number[];
 
   @ApiPropertyOptional({ type: [String], format: 'uuid', default: [] })
-  @OptionalNotNull()
+  @IsOptionalNotNull()
   @IsArray()
   @ArrayMaxSize(100)
   @ArrayUnique()
@@ -134,7 +134,7 @@ export class CreateAlertRuleDto {
   readonly channels!: RuleChannelDto[];
 
   @ApiPropertyOptional({ enum: LOCALES, default: 'id' })
-  @OptionalNotNull()
+  @IsOptionalNotNull()
   @IsIn(LOCALES)
   readonly locale?: Locale;
 
@@ -145,14 +145,14 @@ export class CreateAlertRuleDto {
     description:
       'Quiet period, minutes: an alert is not notified again by this rule within it unless its severity rises',
   })
-  @OptionalNotNull()
+  @IsOptionalNotNull()
   @IsInt()
   @Min(0)
   @Max(10_080)
   readonly quietMinutes?: number;
 
   @ApiPropertyOptional({ default: true })
-  @OptionalNotNull()
+  @IsOptionalNotNull()
   @IsBoolean()
   readonly enabled?: boolean;
 
@@ -161,7 +161,7 @@ export class CreateAlertRuleDto {
     description:
       'Owning organization (super_admin only; default the active organization)',
   })
-  @OptionalNotNull()
+  @IsOptionalNotNull()
   @IsUUID()
   readonly orgId?: string;
 }

@@ -35,6 +35,7 @@
     },
     "/api/v2/alert-rules": {
       "post": {
+        "description": "Every webhook channel gets its own signing key: `channels[i].signingSecret` is in this response only.",
         "operationId": "AlertRulesController_create",
         "parameters": [],
         "requestBody": {
@@ -86,6 +87,7 @@
             "in": "query",
             "schema": {
               "minimum": 1,
+              "maximum": 1000000,
               "default": 1,
               "type": "integer"
             }
@@ -159,8 +161,10 @@
             "name": "id",
             "required": true,
             "in": "path",
+            "description": "UUID",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "uuid"
             }
           }
         ],
@@ -195,14 +199,17 @@
         ]
       },
       "patch": {
+        "description": "A webhook target new to the rule gets its own signing key (`channels[i].signingSecret` in this response only); targets that stay keep their key; removed targets lose theirs.",
         "operationId": "AlertRulesController_update",
         "parameters": [
           {
             "name": "id",
             "required": true,
             "in": "path",
+            "description": "UUID",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "uuid"
             }
           }
         ],
@@ -253,8 +260,10 @@
             "name": "id",
             "required": true,
             "in": "path",
+            "description": "UUID",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "uuid"
             }
           }
         ],
@@ -274,6 +283,64 @@
           }
         },
         "summary": "Delete an alert rule and its delivery history",
+        "tags": [
+          "alert-rules"
+        ],
+        "x-required-permissions": [
+          "alert_rule:write"
+        ]
+      }
+    },
+    "/api/v2/alert-rules/{id}/channels/{index}/rotate-secret": {
+      "post": {
+        "description": "The channel at `index` of `channels` gets a new key: the response carries its `keyId` and, only here, its `signingSecret`. Deliveries from now on (pending retries included) are signed with it; receivers tell the keys apart by `X-AIS-ITS-Key-Id`. A webhook from before 0.2.0 gets its first own key (it was signed with the deployment secret). 404 RULE_CHANNEL_NOT_FOUND for an index without channel, 422 RULE_CHANNEL_NOT_WEBHOOK for other channel types.",
+        "operationId": "AlertRulesController_rotateSecret",
+        "parameters": [
+          {
+            "name": "index",
+            "required": true,
+            "in": "path",
+            "description": "Integer",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9
+            }
+          },
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "UUID",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertRuleDto"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Replace the signing secret of a webhook channel",
         "tags": [
           "alert-rules"
         ],
@@ -320,6 +387,73 @@
           }
         },
         "summary": "Send a test notification through one channel",
+        "tags": [
+          "notifications"
+        ],
+        "x-required-permissions": [
+          "alert_rule:write"
+        ]
+      }
+    },
+    "/api/v2/notifications/deliveries/summary": {
+      "get": {
+        "description": "Deliveries planned within [from, to] (default: the last 30 days) by status, the latest sent delivery and the success rate sent / (sent + failed); `ruleId` narrows it to one rule.",
+        "operationId": "NotificationsController_deliverySummary",
+        "parameters": [
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Start (ISO-8601); default: endpoint specific",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End (ISO-8601); default: now",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "name": "ruleId",
+            "required": false,
+            "in": "query",
+            "description": "One rule (default: every rule of the organization)",
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeliverySummaryDto"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Delivery counts of the alert rules of the organization",
         "tags": [
           "notifications"
         ],
@@ -587,6 +721,453 @@
         ]
       }
     },
+    "/api/v2/alerts/unread-count": {
+      "get": {
+        "description": "Open alerts visible to the user stored or changed (`updatedAt`) after the read mark of POST /alerts/read; every open alert before the first mark. The mark is per user and active organization.",
+        "operationId": "AlertsController_unreadCount",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnreadCountDto"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Unread open alerts of the user in the active organization",
+        "tags": [
+          "alerts"
+        ],
+        "x-required-permissions": [
+          "alert:read"
+        ]
+      }
+    },
+    "/api/v2/alerts/read": {
+      "post": {
+        "description": "Moves the read mark of the user in the active organization forward to `upTo` (default and maximum: now; it never moves backwards) and answers the new unread count. Bodiless requests mark everything read.",
+        "operationId": "AlertsController_markRead",
+        "parameters": [],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarkAlertsReadDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnreadCountDto"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Mark the alerts read up to a time",
+        "tags": [
+          "alerts"
+        ],
+        "x-required-permissions": [
+          "alert:read"
+        ]
+      }
+    },
+    "/api/v2/alerts/stats/series": {
+      "get": {
+        "description": "Visible alerts (the tenancy of GET /alerts) per local hour or day of `tz` of their first occurrence, counted by `groupBy`, every bucket from the one containing `from` to the one containing `to` (zeros included). The first bucket starts at `from` and the last ends at `to` (inclusive), so partial buckets count only their part of the range and the totals add up to GET /alerts with the same filters; when `to` is a bucket start, that instant ends the bucket before. Default range: 7 days (`1d`) or 24 hours (`1h`) up to now; at most 1000 buckets (400 beyond).",
+        "operationId": "AlertsController_series",
+        "parameters": [
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Start (ISO-8601); default: endpoint specific",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End (ISO-8601); default: now",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "open",
+                "acknowledged",
+                "resolved"
+              ]
+            }
+          },
+          {
+            "name": "type",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "example": "ews",
+              "type": "string"
+            }
+          },
+          {
+            "name": "domain",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "safety",
+                "surveillance"
+              ]
+            }
+          },
+          {
+            "name": "severity",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "info",
+                "warning",
+                "critical"
+              ]
+            }
+          },
+          {
+            "name": "mmsi",
+            "required": false,
+            "in": "query",
+            "description": "Vessel or related vessel",
+            "schema": {
+              "example": 525005223,
+              "type": "number"
+            }
+          },
+          {
+            "name": "bucket",
+            "required": false,
+            "in": "query",
+            "description": "Bucket size (at most 1000 buckets per request, counted after clipping the first and last to the range; more: `400 VALIDATION_FAILED`)",
+            "schema": {
+              "default": "1d",
+              "type": "string",
+              "enum": [
+                "1h",
+                "1d"
+              ]
+            }
+          },
+          {
+            "name": "groupBy",
+            "required": false,
+            "in": "query",
+            "description": "Dimension of the counts",
+            "schema": {
+              "default": "severity",
+              "type": "string",
+              "enum": [
+                "severity",
+                "type",
+                "domain"
+              ]
+            }
+          },
+          {
+            "name": "tz",
+            "required": false,
+            "in": "query",
+            "description": "IANA time zone name of the bucket boundaries (local hours and days, e.g. WIB), any case; the response echoes the database spelling. UTC offsets such as `+07:00` are refused (use `Etc/GMT-7`), and so are names the database does not know (`400 VALIDATION_FAILED`)",
+            "schema": {
+              "maxLength": 64,
+              "pattern": "^[A-Za-z][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*$",
+              "default": "UTC",
+              "example": "Asia/Jakarta",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertSeriesDto"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Alert counts over time by severity, type or domain",
+        "tags": [
+          "alerts"
+        ],
+        "x-required-permissions": [
+          "alert:read"
+        ]
+      }
+    },
+    "/api/v2/alerts/export.csv": {
+      "get": {
+        "description": "The filters of GET /alerts, newest first, streamed (RFC 4180, UTF-8, CRLF). Column headers follow `Accept-Language` (`id`, default, or `en`); values are the stored codes, UTC ISO-8601 times and the English title and message. At most ALERT_EXPORT_MAX_ROWS rows (default 100 000): more matching alerts set `X-Truncated: true`.",
+        "operationId": "AlertsController_exportCsv",
+        "parameters": [
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Start (ISO-8601); default: endpoint specific",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End (ISO-8601); default: now",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "open",
+                "acknowledged",
+                "resolved"
+              ]
+            }
+          },
+          {
+            "name": "type",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "example": "ews",
+              "type": "string"
+            }
+          },
+          {
+            "name": "domain",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "safety",
+                "surveillance"
+              ]
+            }
+          },
+          {
+            "name": "severity",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "info",
+                "warning",
+                "critical"
+              ]
+            }
+          },
+          {
+            "name": "mmsi",
+            "required": false,
+            "in": "query",
+            "description": "Vessel or related vessel",
+            "schema": {
+              "example": 525005223,
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "CSV document (`Content-Disposition: attachment`)",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "headers": {
+              "X-Truncated": {
+                "description": "`true` when more alerts matched than the export carries",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                }
+              },
+              "Content-Language": {
+                "description": "Language of the column headers",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "id",
+                    "en"
+                  ]
+                }
+              },
+              "Content-Disposition": {
+                "description": "attachment; filename=\"alerts-<yyyyMMdd-HHmm>.csv\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Export alerts as CSV",
+        "tags": [
+          "alerts"
+        ],
+        "x-required-permissions": [
+          "alert:read"
+        ]
+      }
+    },
+    "/api/v2/alerts/{id}/occurrences": {
+      "get": {
+        "description": "Every alert.raised.v1 stored in the alert: the one that opened it and each merged repeat or escalation, with its own time, severity, texts and measurements (`data`). Detectors publish no de-escalations (the kit's alert emitter only announces raises and escalations), so the history has none. Alerts stored before 0.2.0 have no history.",
+        "operationId": "AlertsController_occurrences",
+        "parameters": [
+          {
+            "name": "cursor",
+            "required": false,
+            "in": "query",
+            "description": "Opaque cursor from `page.nextCursor` of the previous page",
+            "schema": {
+              "maxLength": 1024,
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "minimum": 1,
+              "maximum": 500,
+              "default": 100,
+              "type": "integer"
+            }
+          },
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "UUID",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertOccurrencePageDto"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Occurrence history of an alert, newest first",
+        "tags": [
+          "alerts"
+        ],
+        "x-required-permissions": [
+          "alert:read"
+        ]
+      }
+    },
     "/api/v2/alerts/{id}": {
       "get": {
         "operationId": "AlertsController_get",
@@ -595,8 +1176,10 @@
             "name": "id",
             "required": true,
             "in": "path",
+            "description": "UUID",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "uuid"
             }
           }
         ],
@@ -639,8 +1222,10 @@
             "name": "id",
             "required": true,
             "in": "path",
+            "description": "UUID",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "uuid"
             }
           }
         ],
@@ -683,8 +1268,10 @@
             "name": "id",
             "required": true,
             "in": "path",
+            "description": "UUID",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "uuid"
             }
           }
         ],
@@ -723,7 +1310,7 @@
   "info": {
     "title": "AIS Maritime Intelligence — AIS ITS Notification Service",
     "description": "Alert inbox, alert rules and deliveries (e-mail, Telegram, webhook), transactional e-mail and the realtime WebSocket gateway. Realtime: socket.io at path /ws on the same origin (handshake auth { token }, events of @darmawanweb/ais-its-contracts/realtime).",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "contact": {}
   },
   "tags": [
@@ -826,7 +1413,9 @@
               "telemetry",
               "geo",
               "safety",
-              "surveillance"
+              "surveillance",
+              "notification",
+              "security"
             ],
             "nullable": true
           },
@@ -844,6 +1433,7 @@
             "enum": [
               "implemented",
               "planned",
+              "not_implemented",
               "deprecated"
             ],
             "nullable": true
@@ -1030,11 +1620,25 @@
             "type": "string",
             "description": "E-mail address, Telegram chat id / @channel, or webhook URL",
             "example": "ops@example.com"
+          },
+          "keyId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "Webhooks: id of the signing key, sent as `X-AIS-ITS-Key-Id`; null for other channels and for a webhook from before 0.2.0 (signed with the deployment secret, key id `deployment`, until its secret is rotated)"
+          },
+          "signingSecret": {
+            "type": "string",
+            "nullable": true,
+            "example": "whsec_Xb3k…",
+            "description": "Webhooks: the HMAC-SHA256 signing secret, **only** in the response that created the key (POST, a PATCH adding the target, rotate-secret); store it at the receiver, it is never shown again. null otherwise"
           }
         },
         "required": [
           "type",
-          "target"
+          "target",
+          "keyId",
+          "signingSecret"
         ]
       },
       "AlertRuleDto": {
@@ -1168,7 +1772,8 @@
         "properties": {
           "page": {
             "type": "integer",
-            "minimum": 1
+            "minimum": 1,
+            "maximum": 1000000
           },
           "pageSize": {
             "type": "integer",
@@ -1357,13 +1962,82 @@
           "error": {
             "type": "string",
             "nullable": true
+          },
+          "keyId": {
+            "type": "string",
+            "nullable": true,
+            "example": "0193a3c0-0000-7000-8000-0000000000f1",
+            "description": "Webhook tests: the X-AIS-ITS-Key-Id that signed the request — the key of the organization's channel with this target, `deployment` for a channel from before 0.2.0, or `test` (a throwaway key: the target is no channel yet, so the request proves reachability only); null for other channels"
           }
         },
         "required": [
           "channel",
           "target",
           "status",
-          "error"
+          "error",
+          "keyId"
+        ]
+      },
+      "DeliverySummaryDto": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "sent": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Delivered (e-mail: accepted by the SMTP server)"
+          },
+          "failed": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Failed for good"
+          },
+          "pending": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Waiting for their next attempt, or being attempted (`pending` and `sending`)"
+          },
+          "queued": {
+            "type": "number",
+            "minimum": 0,
+            "description": "E-mails handed to the e-mail pipeline, not yet sent"
+          },
+          "total": {
+            "type": "number",
+            "minimum": 0
+          },
+          "lastDeliveredAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Latest delivery that was sent"
+          },
+          "successRate": {
+            "type": "number",
+            "nullable": true,
+            "minimum": 0,
+            "maximum": 1,
+            "example": 0.96,
+            "description": "sent / (sent + failed), 4 decimals; null while none finished"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "sent",
+          "failed",
+          "pending",
+          "queued",
+          "total",
+          "lastDeliveredAt",
+          "successRate"
         ]
       },
       "DeliveryDto": {
@@ -1580,6 +2254,35 @@
             "additionalProperties": true,
             "description": "Detector specific details"
           },
+          "messageKey": {
+            "type": "string",
+            "nullable": true,
+            "pattern": "^[a-z0-9_]+(\\.[a-z0-9_]+)+$",
+            "example": "safety.ews.anchored_near_pipeline",
+            "description": "Stable key of the text (`<domain>.<detector>.<situation>`, from `data.messageKey`) for clients that localize it; null when the detector sent none or an invalid one (render `title` / `message`)"
+          },
+          "messageParams": {
+            "type": "object",
+            "nullable": true,
+            "additionalProperties": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "example": {
+              "vessel": "KM Bahari Satu (MMSI 525005223)",
+              "distanceM": 840
+            },
+            "description": "Values of the text (`data.messageParams`, flat strings, numbers and booleans); null together with `messageKey`"
+          },
           "source": {
             "type": "string",
             "example": "safety",
@@ -1612,12 +2315,53 @@
           "resolvedBy": {
             "type": "string",
             "format": "uuid",
-            "nullable": true
+            "nullable": true,
+            "description": "User who resolved the alert; null while unresolved and when its detector resolved it (`resolutionEventId` set)"
           },
           "resolvedAt": {
             "type": "string",
             "format": "date-time",
-            "nullable": true
+            "nullable": true,
+            "description": "When it was resolved: the action of the user, or the end of the condition (`resolvedAt` of `alert.resolved.v1`)"
+          },
+          "resolutionReason": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 500,
+            "example": "safe: not at anchor within the warning distance",
+            "description": "Why the detector ended the condition (English `reason` of `alert.resolved.v1`); null otherwise"
+          },
+          "resolutionMessageKey": {
+            "type": "string",
+            "nullable": true,
+            "pattern": "^[a-z0-9_]+(\\.[a-z0-9_]+)+$",
+            "example": "safety.ews.resolved_safe",
+            "description": "Localizable key of `resolutionReason` (`messageKey` in the data of `alert.resolved.v1`); null otherwise"
+          },
+          "resolutionMessageParams": {
+            "type": "object",
+            "nullable": true,
+            "additionalProperties": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "example": {},
+            "description": "Values of `resolutionMessageKey`; null together with it"
+          },
+          "resolutionEventId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "Envelope id of the `alert.resolved.v1` that resolved the alert; null when a user resolved it or it is unresolved"
           },
           "updatedAt": {
             "type": "string",
@@ -1641,6 +2385,8 @@
           "methodId",
           "dedupKey",
           "data",
+          "messageKey",
+          "messageParams",
           "source",
           "occurrences",
           "occurredAt",
@@ -1649,6 +2395,10 @@
           "acknowledgedAt",
           "resolvedBy",
           "resolvedAt",
+          "resolutionReason",
+          "resolutionMessageKey",
+          "resolutionMessageParams",
+          "resolutionEventId",
           "updatedAt"
         ]
       },
@@ -1740,6 +2490,270 @@
           "bySeverity",
           "byDomain",
           "byType"
+        ]
+      },
+      "UnreadCountDto": {
+        "type": "object",
+        "properties": {
+          "unread": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Open alerts visible to the user stored or changed after `readUpTo` (all open alerts without a mark)"
+          },
+          "readUpTo": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Read mark of the user in the active organization; null before the first POST /alerts/read"
+          }
+        },
+        "required": [
+          "unread",
+          "readUpTo"
+        ]
+      },
+      "MarkAlertsReadDto": {
+        "type": "object",
+        "properties": {
+          "upTo": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Alerts stored or changed up to this time (their `updatedAt`) count as read; default and maximum: now. The mark never moves backwards."
+          }
+        }
+      },
+      "AlertSeriesBucketDto": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Start (inclusive): the local hour or day start; the request `from` for the first bucket"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time",
+            "description": "End (exclusive): the next bucket start; the request `to` (inclusive, like the filter) for the last bucket"
+          },
+          "total": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Alerts whose first occurrence is in `from`–`to`"
+          },
+          "counts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "example": {
+              "info": 0,
+              "warning": 3,
+              "critical": 1
+            },
+            "description": "Count per key of `keys` (0 included)"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "total",
+          "counts"
+        ]
+      },
+      "AlertSeriesDto": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "bucket": {
+            "type": "string",
+            "enum": [
+              "1h",
+              "1d"
+            ]
+          },
+          "groupBy": {
+            "type": "string",
+            "enum": [
+              "severity",
+              "type",
+              "domain"
+            ]
+          },
+          "timeZone": {
+            "type": "string",
+            "example": "Asia/Jakarta",
+            "description": "Time zone of the bucket boundaries (database spelling)"
+          },
+          "keys": {
+            "example": [
+              "info",
+              "warning",
+              "critical"
+            ],
+            "description": "Keys of `counts`: every registry value of the dimension plus any other type present",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "buckets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AlertSeriesBucketDto"
+            }
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "bucket",
+          "groupBy",
+          "timeZone",
+          "keys",
+          "buckets"
+        ]
+      },
+      "AlertOccurrenceDto": {
+        "type": "object",
+        "properties": {
+          "eventId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Id of the alert.raised.v1 (the first one is the inbox alert id)"
+          },
+          "occurredAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the detector observed it"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "raised",
+              "merged",
+              "escalated"
+            ],
+            "description": "raised: opened the inbox alert; escalated: raised its severity; merged: a repeat"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "info",
+              "warning",
+              "critical"
+            ],
+            "description": "Severity of this occurrence (the alert keeps the highest of its occurrences)"
+          },
+          "title": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "messageKey": {
+            "type": "string",
+            "nullable": true,
+            "pattern": "^[a-z0-9_]+(\\.[a-z0-9_]+)+$",
+            "example": "safety.ews.anchored_near_pipeline",
+            "description": "Stable key of the text (`<domain>.<detector>.<situation>`, from `data.messageKey`) for clients that localize it; null when the detector sent none or an invalid one (render `title` / `message`)"
+          },
+          "messageParams": {
+            "type": "object",
+            "nullable": true,
+            "additionalProperties": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "example": {
+              "vessel": "KM Bahari Satu (MMSI 525005223)",
+              "distanceM": 840
+            },
+            "description": "Values of the text (`data.messageParams`, flat strings, numbers and booleans); null together with `messageKey`"
+          },
+          "lat": {
+            "type": "number",
+            "nullable": true
+          },
+          "lon": {
+            "type": "number",
+            "nullable": true
+          },
+          "relatedMmsi": {
+            "type": "number",
+            "nullable": true
+          },
+          "zoneId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "methodId": {
+            "type": "string",
+            "example": "ews.pipeline_distance_status",
+            "description": "Methodology catalog id (spec §17)"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Measurements of the detector for this occurrence"
+          },
+          "receivedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the inbox stored it"
+          }
+        },
+        "required": [
+          "eventId",
+          "occurredAt",
+          "outcome",
+          "severity",
+          "title",
+          "message",
+          "messageKey",
+          "messageParams",
+          "lat",
+          "lon",
+          "relatedMmsi",
+          "zoneId",
+          "methodId",
+          "data",
+          "receivedAt"
+        ]
+      },
+      "AlertOccurrencePageDto": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AlertOccurrenceDto"
+            }
+          },
+          "page": {
+            "$ref": "#/components/schemas/CursorPageInfoDto"
+          }
+        },
+        "required": [
+          "data",
+          "page"
         ]
       },
       "ProblemDetails": {

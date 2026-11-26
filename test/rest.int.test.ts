@@ -20,8 +20,6 @@ import {
 } from './support/receivers.js';
 import { startTestService, type TestService } from './support/test-service.js';
 
-const WEBHOOK_SECRET = 'whsec-rest-secret-0123456789';
-
 const AlertSchema = z.object({
   id: z.uuid(),
   mmsi: z.number(),
@@ -100,10 +98,7 @@ describe('REST API and tenancy (spec §8.5, §13.9)', () => {
     webhook = await startFakeServer(() => ({ status: 200 }));
     // No TELEGRAM_BOT_TOKEN: the Telegram channel is unavailable here.
     service = await startTestService({
-      env: {
-        WEBHOOK_SIGNING_SECRET: WEBHOOK_SECRET,
-        WEBHOOK_ALLOW_PRIVATE_TARGETS: 'true',
-      },
+      env: { WEBHOOK_ALLOW_PRIVATE_TARGETS: 'true' },
     });
     vesselA = uniqueMmsi();
     vesselB = uniqueMmsi();
@@ -541,6 +536,7 @@ describe('REST API and tenancy (spec §8.5, §13.9)', () => {
   describe('test notifications', () => {
     it('posts a signed test webhook and queues a test e-mail', async () => {
       const claims = { roles: ['org_admin'] as Role[], orgId: orgA };
+      // A target that is no channel yet: signed with a throwaway key.
       const sent = await call('POST', '/notifications/test', claims, {
         channel: 'webhook',
         target: `${webhook.url}/test`,
@@ -552,20 +548,49 @@ describe('REST API and tenancy (spec §8.5, §13.9)', () => {
         target: `${webhook.url}/test`,
         status: 'sent',
         error: null,
+        keyId: 'test',
       });
       const [request] = webhook.requests;
-      expect(
-        verifyWebhookSignature(
-          WEBHOOK_SECRET,
-          String(request?.headers['x-ais-its-timestamp']),
-          request?.rawBody ?? '',
-          String(request?.headers['x-ais-its-signature']),
-        ),
-      ).toBe(true);
+      expect(request?.headers['x-ais-its-key-id']).toBe('test');
+      expect(String(request?.headers['x-ais-its-signature'])).toMatch(
+        /^sha256=[0-9a-f]{64}$/,
+      );
       expect(JSON.parse(request?.rawBody ?? '{}')).toMatchObject({
         event: 'test',
         locale: 'en',
       });
+
+      // A channel of the organization's rules: signed with that channel's key.
+      const created = await call('POST', '/alert-rules', claims, {
+        name: 'Test receiver',
+        channels: [{ type: 'webhook', target: `${webhook.url}/receiver` }],
+      });
+      expect(created.statusCode, created.body).toBe(201);
+      const channel = z
+        .object({
+          channels: z.array(
+            z.object({ keyId: z.uuid(), signingSecret: z.string() }),
+          ),
+        })
+        .parse(created.json()).channels[0];
+      const keyed = await call('POST', '/notifications/test', claims, {
+        channel: 'webhook',
+        target: `${webhook.url}/receiver`,
+      });
+      expect(keyed.json()).toMatchObject({
+        status: 'sent',
+        keyId: channel?.keyId,
+      });
+      const received = webhook.requests.at(-1);
+      expect(received?.headers['x-ais-its-key-id']).toBe(channel?.keyId);
+      expect(
+        verifyWebhookSignature(
+          channel?.signingSecret ?? '',
+          String(received?.headers['x-ais-its-timestamp']),
+          received?.rawBody ?? '',
+          String(received?.headers['x-ais-its-signature']),
+        ),
+      ).toBe(true);
 
       const address = `test-${newId()}@example.com`;
       const queued = await call('POST', '/notifications/test', claims, {

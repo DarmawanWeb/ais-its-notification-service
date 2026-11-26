@@ -4,6 +4,7 @@ import { bootstrapService, loadConfig } from '@darmawanweb/ais-its-nest';
 
 import { AppModule } from './app.module.js';
 import { configSchema } from './config.js';
+import { NOTIFICATION_CORS } from './cors.js';
 import { useRealtimeAdapter } from './modules/realtime/realtime.adapter.js';
 import { OPENAPI } from './openapi.options.js';
 
@@ -15,5 +16,6 @@ await bootstrapService({
   appModule: AppModule,
   config: loadConfig(configSchema),
   openapi: OPENAPI,
+  cors: NOTIFICATION_CORS,
   configure: useRealtimeAdapter,
 });

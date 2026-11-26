@@ -13,6 +13,12 @@ import {
 import type { Principal } from '@darmawanweb/ais-its-nest/auth';
 import { Injectable } from '@nestjs/common';
 
+import {
+  DEPLOYMENT_KEY_ID,
+  newWebhookSecret,
+  TEST_KEY_ID,
+  type WebhookSigningKey,
+} from '../../domain/webhook-signature.js';
 import { NotificationMetrics } from '../../metrics/notification-metrics.js';
 import { requireRuleTenancy } from '../rules/alert-rule.js';
 import { ChannelPolicy } from './channels/channel-policy.js';
@@ -21,8 +27,10 @@ import { EmailChannel } from './channels/email.channel.js';
 import { escapeTelegramHtml } from './channels/telegram-format.js';
 import { TelegramChannel } from './channels/telegram.channel.js';
 import { WebhookChannel } from './channels/webhook.channel.js';
+import { WebhookKeysRepository } from './channels/webhook-keys.repository.js';
 import { DeliveriesRepository } from './deliveries.repository.js';
 import type { Delivery, DeliveryCursor, DeliveryFilter } from './delivery.js';
+import type { DeliverySummary } from './dto/delivery.dto.js';
 import { testText, webhookTestBody } from './notification-content.js';
 import { TestThrottle } from './test-throttle.js';
 
@@ -39,6 +47,8 @@ export interface TestNotificationResult {
   readonly target: string;
   readonly status: 'sent' | 'queued' | 'failed';
   readonly error: string | null;
+  /** `X-AIS-ITS-Key-Id` of a webhook test (`null` for other channels). */
+  readonly keyId: string | null;
 }
 
 /** Test notifications per user and instance within {@link TEST_WINDOW_MS}. */
@@ -56,6 +66,7 @@ export class NotificationsService {
     private readonly email: EmailChannel,
     private readonly telegram: TelegramChannel,
     private readonly webhook: WebhookChannel,
+    private readonly webhookKeys: WebhookKeysRepository,
     private readonly deliveries: DeliveriesRepository,
     private readonly metrics: NotificationMetrics,
     private readonly audit: AuditService,
@@ -83,7 +94,11 @@ export class NotificationsService {
     if (wait > 0)
       throw new RateLimitedError({ retryAfterSeconds: Math.ceil(wait / 1000) });
     const locale = input.locale ?? 'id';
-    const result = await this.sendTest(input, locale, principal);
+    const key =
+      input.channel === 'webhook'
+        ? await this.testKey(input.target, principal.orgId)
+        : null;
+    const result = await this.sendTest(input, locale, principal, key);
     const outcome = result.outcome === 'failed' ? 'failed' : result.outcome;
     this.metrics.notificationsSent.inc({ channel: input.channel, outcome });
     await this.audit.record(
@@ -100,6 +115,58 @@ export class NotificationsService {
       target: input.target,
       status: outcome,
       error: result.outcome === 'failed' ? result.error : null,
+      keyId:
+        input.channel === 'webhook'
+          ? (key?.id ??
+            (this.webhook.hasDeploymentKey() ? DEPLOYMENT_KEY_ID : null))
+          : null,
+    };
+  }
+
+  /**
+   * The key of a webhook test: the key of the organization's channel with
+   * this target, `undefined` for a channel from before 0.2.0 (the
+   * deployment secret signs it, as its deliveries), else a throwaway key
+   * (`X-AIS-ITS-Key-Id: test`): the test then proves reachability and the
+   * format, not the receiver's secret.
+   */
+  private async testKey(
+    target: string,
+    orgId: string | null,
+  ): Promise<WebhookSigningKey | undefined> {
+    if (orgId !== null) {
+      const key = await this.webhookKeys.signingKeyOfOrg(orgId, target);
+      if (key !== undefined) return key;
+      if (await this.webhookKeys.isChannelOfOrg(orgId, target))
+        return undefined;
+    }
+    return { id: TEST_KEY_ID, secret: newWebhookSecret() };
+  }
+
+  /** Deliveries of the principal's rules planned within `[from, to]`, by status. */
+  async summarizeDeliveries(
+    filter: {
+      readonly ruleId?: string | undefined;
+      readonly from: Date;
+      readonly to: Date;
+    },
+    principal: Principal,
+  ): Promise<DeliverySummary> {
+    const { counts, lastSentAt } = await this.deliveries.summary(
+      filter,
+      requireRuleTenancy(principal),
+    );
+    return {
+      from: filter.from,
+      to: filter.to,
+      counts: {
+        pending: counts.get('pending') ?? 0,
+        sending: counts.get('sending') ?? 0,
+        queued: counts.get('queued') ?? 0,
+        sent: counts.get('sent') ?? 0,
+        failed: counts.get('failed') ?? 0,
+      },
+      lastDeliveredAt: lastSentAt,
     };
   }
 
@@ -126,6 +193,7 @@ export class NotificationsService {
     input: TestNotificationInput,
     locale: Locale,
     principal: Principal,
+    key: WebhookSigningKey | null | undefined,
   ): Promise<ChannelResult> {
     switch (input.channel) {
       case 'email':
@@ -145,6 +213,7 @@ export class NotificationsService {
           input.target,
           webhookTestBody(id, locale, new Date()),
           id,
+          key ?? undefined,
         );
       }
     }

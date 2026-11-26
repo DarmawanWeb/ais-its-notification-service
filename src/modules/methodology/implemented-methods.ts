@@ -6,9 +6,8 @@
  * The notification service implements no formula of the methodology catalog:
  * the alerts it stores carry the `methodId` of the detector rule that raised
  * them. Its own rules (inbox merge and lifecycle, rule matching, quiet period,
- * delivery retries, webhook signature, realtime rooms and batching) are
- * listed under proposed ids that are not yet in docs/references/methods.json;
- * the endpoint lists them without catalog details until they are catalogued.
+ * delivery retries, webhook signature, realtime rooms and batching) are the
+ * `notify.*` methods of the catalog (domain `notification`, contracts 0.4.0).
  */
 export const IMPLEMENTED_METHOD_IDS: readonly string[] = [
   'notify.alert_dedup_merge',

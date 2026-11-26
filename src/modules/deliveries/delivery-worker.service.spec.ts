@@ -6,6 +6,7 @@ import type { ChannelResult } from './channels/channel-result.js';
 import type { EmailChannel } from './channels/email.channel.js';
 import type { TelegramChannel } from './channels/telegram.channel.js';
 import type { WebhookChannel } from './channels/webhook.channel.js';
+import type { WebhookKeysRepository } from './channels/webhook-keys.repository.js';
 import type {
   AttemptResult,
   DeliveriesRepository,
@@ -96,6 +97,7 @@ function fakeWebhook() {
   );
   return {
     channel: { post } as unknown as WebhookChannel,
+    post,
     release: (result: ChannelResult) => {
       release?.(result);
     },
@@ -108,6 +110,9 @@ function worker(repository: DeliveriesRepository, webhook: WebhookChannel) {
     {} as unknown as EmailChannel,
     {} as unknown as TelegramChannel,
     webhook,
+    {
+      signingKey: vi.fn(() => Promise.resolve(undefined)),
+    } as unknown as WebhookKeysRepository,
     {
       notificationsSent: { inc: vi.fn() },
     } as unknown as NotificationMetrics,
@@ -164,8 +169,10 @@ describe('DeliveryWorker', () => {
     const webhook = fakeWebhook();
     const subject = worker(repository, webhook.channel);
     subject.wake();
+    // The attempt is in flight once the channel was called (after its key lookup).
     await vi.waitFor(() => {
       expect(claimDue).toHaveBeenCalled();
+      expect(webhook.post).toHaveBeenCalled();
     });
 
     const stopped = subject.beforeApplicationShutdown();

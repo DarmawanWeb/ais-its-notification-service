@@ -71,10 +71,72 @@ export const alerts = serviceSchema.table(
     resolvedAt: timestamptz('resolved_at'),
     occurrences: pg.integer('occurrences').notNull().default(1),
     lastOccurredAt: timestamptz('last_occurred_at').notNull(),
+    /** Resolution of a detector (`0003_resolutions_history_read_keys.sql`). */
+    resolutionReason: pg.text('resolution_reason'),
+    resolutionEventId: pg.uuid('resolution_event_id'),
+    resolutionData: pg
+      .jsonb('resolution_data')
+      .$type<Record<string, unknown>>(),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
     updatedAt: timestamptz('updated_at').notNull().defaultNow(),
   },
   (table) => [pg.primaryKey({ columns: [table.id, table.occurredAt] })],
+);
+
+/** Outcomes of a stored occurrence (`alert_occurrences.outcome`). */
+export type OccurrenceOutcome = 'raised' | 'merged' | 'escalated';
+
+/**
+ * Every `alert.raised.v1` stored in the inbox, a hypertable on the
+ * `occurred_at` of its inbox alert (`0003_resolutions_history_read_keys.sql`).
+ */
+export const alertOccurrences = serviceSchema.table(
+  'alert_occurrences',
+  {
+    alertId: pg.uuid('alert_id').notNull(),
+    alertOccurredAt: timestamptz('alert_occurred_at').notNull(),
+    eventId: pg.uuid('event_id').notNull(),
+    occurredAt: timestamptz('occurred_at').notNull(),
+    outcome: pg.text('outcome').$type<OccurrenceOutcome>().notNull(),
+    severity: pg
+      .text('severity')
+      .$type<'info' | 'warning' | 'critical'>()
+      .notNull(),
+    relatedMmsi: pg.integer('related_mmsi'),
+    title: pg.text('title').notNull(),
+    message: pg.text('message').notNull(),
+    lat: pg.doublePrecision('lat'),
+    lon: pg.doublePrecision('lon'),
+    zoneId: pg.uuid('zone_id'),
+    methodId: pg.text('method_id').notNull(),
+    data: pg.jsonb('data').$type<Record<string, unknown>>().notNull(),
+    receivedAt: timestamptz('received_at').notNull().defaultNow(),
+  },
+  (table) => [
+    pg.primaryKey({
+      columns: [table.alertId, table.alertOccurredAt, table.eventId],
+    }),
+  ],
+);
+
+/**
+ * Read marks of the inbox per user and active organization
+ * (`0003_resolutions_history_read_keys.sql`).
+ */
+export const alertReadMarks = serviceSchema.table(
+  'alert_read_marks',
+  {
+    userId: pg.uuid('user_id').notNull(),
+    orgId: pg.uuid('org_id'),
+    readUpTo: timestamptz('read_up_to').notNull(),
+    updatedAt: timestamptz('updated_at').notNull().defaultNow(),
+  },
+  (table) => [
+    pg
+      .unique('alert_read_marks_key')
+      .on(table.userId, table.orgId)
+      .nullsNotDistinct(),
+  ],
 );
 
 /**
@@ -131,6 +193,27 @@ export const alertRules = serviceSchema.table(
     updatedAt: timestamptz('updated_at').notNull().defaultNow(),
   },
   (table) => [pg.index('alert_rules_org_idx').on(table.orgId, table.createdAt)],
+);
+
+/**
+ * HMAC signing keys of webhook channels, one per rule and target
+ * (`0003_resolutions_history_read_keys.sql`).
+ */
+export const webhookKeys = serviceSchema.table(
+  'webhook_keys',
+  {
+    id: pg.uuid('id').primaryKey(),
+    ruleId: pg
+      .uuid('rule_id')
+      .notNull()
+      .references(() => alertRules.id, { onDelete: 'cascade' }),
+    target: pg.text('target').notNull(),
+    secret: pg.text('secret').notNull(),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (table) => [
+    pg.unique('webhook_keys_rule_target_key').on(table.ruleId, table.target),
+  ],
 );
 
 /** Delivery states (`deliveries.status`). */

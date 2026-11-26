@@ -1,5 +1,8 @@
 import { REALTIME_SERVER_EVENTS } from '@darmawanweb/ais-its-contracts/realtime';
-import type { AlertRaisedV1 } from '@darmawanweb/ais-its-contracts/events';
+import type {
+  AlertRaisedV1,
+  AlertResolvedV1,
+} from '@darmawanweb/ais-its-contracts/events';
 import {
   InjectPool,
   type Pool,
@@ -10,9 +13,11 @@ import { RetryableError } from '@darmawanweb/ais-its-nest/nats';
 import { Injectable, Logger } from '@nestjs/common';
 
 import { transactionDatabase } from '../../db/database.js';
+import type { OccurrenceOutcome } from '../../db/schema.js';
 import {
   type AlertOccurrence,
   mergeOccurrence,
+  resolveByDetector,
 } from '../../domain/alert-inbox.js';
 import { NotificationMetrics } from '../../metrics/notification-metrics.js';
 import { DeliveryWorker } from '../deliveries/delivery-worker.service.js';
@@ -20,6 +25,7 @@ import type { DeliveryReason } from '../deliveries/delivery.js';
 import { AlertBroadcaster } from '../realtime/alert-broadcaster.js';
 import { VesselsRepository } from '../vessels/vessels.repository.js';
 import {
+  alertMmsis,
   alertRooms,
   type InboxAlert,
   newInboxAlert,
@@ -32,13 +38,24 @@ import { DeliveryPlanner } from './delivery-planner.js';
 export const ALERTS_CONSUMER = 'notification-alerts';
 
 /**
- * Read–merge–write rounds of one occurrence that races with acknowledge /
- * resolve actions (each lost round means the alert's status changed).
+ * Read–write rounds of one occurrence or resolution that races with
+ * acknowledge / resolve actions over REST (each lost round means the alert's
+ * status changed).
  */
 const MERGE_ATTEMPTS = 3;
 
 /** What became of a consumed alert. */
 export type IngestOutcome = 'raised' | 'merged' | 'escalated' | 'duplicate';
+
+/**
+ * What became of a consumed resolution: `resolved`; `not_found` (no
+ * unresolved inbox alert with its dedup key); `later_occurrence` (the alert
+ * merged an occurrence after `resolvedAt`); `duplicate` (handled before).
+ * A resolution whose raise is not stored yet has no outcome: it fails with
+ * a `RetryableError` until its last delivery.
+ */
+export type ResolutionOutcome =
+  'resolved' | 'not_found' | 'later_occurrence' | 'duplicate';
 
 /** An `alert.raised.v1` envelope as consumed. */
 export interface AlertEnvelope {
@@ -47,12 +64,38 @@ export interface AlertEnvelope {
   readonly data: AlertRaisedV1;
 }
 
+/** An `alert.resolved.v1` envelope as consumed. */
+export interface ResolutionEnvelope {
+  readonly id: string;
+  readonly source: string;
+  readonly data: AlertResolvedV1;
+}
+
+/** Where a resolution's delivery stands in the consumer's retries. */
+export interface ResolutionDelivery {
+  /** 1-based delivery count of the message. */
+  readonly deliveryCount: number;
+  /** Deliveries before the message is dead-lettered. */
+  readonly maxDeliver: number;
+}
+
 interface Stored {
   readonly outcome: Exclude<IngestOutcome, 'duplicate'>;
   readonly alert: InboxAlert;
   readonly owners: readonly (string | null)[];
   readonly planned: number;
 }
+
+type StoredResolution =
+  | {
+      readonly outcome: 'resolved';
+      readonly alert: InboxAlert;
+      readonly owners: readonly (string | null)[];
+    }
+  | {
+      readonly outcome: 'not_found' | 'later_occurrence';
+      readonly alertId: string | null;
+    };
 
 function occurrenceOf(alert: AlertRaisedV1): AlertOccurrence {
   return {
@@ -75,14 +118,31 @@ const REASONS: Record<Stored['outcome'], DeliveryReason> = {
   merged: 'recurred',
 };
 
+/** Serializes the occurrences and the resolution of one condition across consumers and instances. */
+async function lockDedupKey(client: PoolClient, dedupKey: string) {
+  await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+    `notify.alert:${dedupKey}`,
+  ]);
+}
+
 /**
- * Stores consumed alerts in the inbox (spec §13.9). One transaction per
- * alert, idempotent by envelope id (`withIdempotency`) and serialized per
- * dedup key (advisory lock): the first occurrence of a key creates an inbox
- * alert, later occurrences while it is unresolved merge into it
- * (`mergeOccurrence`), and the matching rules' deliveries are planned in the
- * same transaction. After the commit the change is pushed to clients and the
- * delivery worker is woken.
+ * Stores consumed alerts and resolutions in the inbox (spec §13.9, §18). One
+ * transaction per event, idempotent by envelope id (`withIdempotency`) and
+ * serialized per dedup key (advisory lock):
+ *
+ * - `alert.raised.v1`: the first occurrence of a key creates an inbox alert,
+ *   later occurrences while it is unresolved merge into it
+ *   (`mergeOccurrence`); every stored occurrence is recorded in the alert's
+ *   history, and the matching rules' deliveries are planned in the same
+ *   transaction.
+ * - `alert.resolved.v1`: resolves the unresolved alert of the key unless it
+ *   merged a later occurrence (`resolveByDetector`); no deliveries. A
+ *   resolution can overtake its raise (a nak'd raise is redelivered after
+ *   later messages of its subject; replicas handle one subject at the same
+ *   time), so it waits for the raise it names (`alertId`) with retries.
+ *
+ * After the commit the change is pushed to clients (fan-out over every
+ * instance) and the delivery worker is woken.
  */
 @Injectable()
 export class AlertIngestService {
@@ -98,6 +158,7 @@ export class AlertIngestService {
     private readonly metrics: NotificationMetrics,
   ) {}
 
+  /** Stores an `alert.raised.v1`. */
   async ingest(envelope: AlertEnvelope): Promise<IngestOutcome> {
     const result = await withIdempotency(
       this.pool,
@@ -111,22 +172,73 @@ export class AlertIngestService {
     return outcome;
   }
 
+  /**
+   * Applies an `alert.resolved.v1`: resolves the unresolved inbox alert of
+   * its dedup key (`resolved_by` = `null`, `resolved_at` = `resolvedAt`, the
+   * reason, the event id and data), unless there is none or it merged an
+   * occurrence later than `resolvedAt`. Runs no rule deliveries; the change
+   * is pushed to the current owners (as the alert is read over REST).
+   *
+   * Before its last delivery, a resolution whose raise (`alertId`, the
+   * envelope id of the occurrence's last `alert.raised.v1`) is not stored
+   * yet fails, so the raise is stored first and then resolved (also an
+   * escalation that would otherwise open a new alert after the
+   * resolution); on the last delivery it is applied to what is there.
+   *
+   * @throws {RetryableError} when the raise is not stored yet or the alert kept changing (the consumer retries later)
+   */
+  async resolve(
+    envelope: ResolutionEnvelope,
+    delivery: ResolutionDelivery,
+  ): Promise<ResolutionOutcome> {
+    const result = await withIdempotency(
+      this.pool,
+      { consumer: ALERTS_CONSUMER, eventId: envelope.id },
+      (client) => this.storeResolution(client, envelope, delivery),
+    );
+    if (result.duplicate) {
+      this.metrics.alertResolutions.inc({ outcome: 'duplicate' });
+      return 'duplicate';
+    }
+    const stored = result.value;
+    this.metrics.alertResolutions.inc({ outcome: stored.outcome });
+    if (stored.outcome === 'resolved') {
+      this.push(
+        REALTIME_SERVER_EVENTS.ALERT_UPDATED,
+        stored.alert,
+        stored.owners,
+      );
+      this.logger.log(
+        {
+          alertId: stored.alert.id,
+          dedupKey: stored.alert.dedupKey,
+          resolutionId: envelope.id,
+          resolvedAt: envelope.data.resolvedAt,
+        },
+        'Alert resolved by its detector',
+      );
+    } else {
+      this.logger.debug(
+        {
+          dedupKey: envelope.data.dedupKey,
+          resolutionId: envelope.id,
+          alertId: stored.alertId,
+          outcome: stored.outcome,
+        },
+        'Ignored an alert resolution',
+      );
+    }
+    return stored.outcome;
+  }
+
   private async store(
     client: PoolClient,
     envelope: AlertEnvelope,
   ): Promise<Stored | undefined> {
     const alert = envelope.data;
     const tx = transactionDatabase(client);
-    // Serializes the occurrences of one condition across consumers and instances.
-    await client.query(
-      'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
-      [`notify.alert:${alert.dedupKey}`],
-    );
-    const mmsis =
-      alert.relatedMmsi === null
-        ? [alert.mmsi]
-        : [alert.mmsi, alert.relatedMmsi];
-    const owners = await this.vessels.ownersOf(mmsis, tx);
+    await lockDedupKey(client, alert.dedupKey);
+    const owners = await this.vessels.ownersOf(alertMmsis(alert), tx);
     const vesselOrgId = owners.get(alert.mmsi)?.orgId ?? null;
     const relatedVesselOrgId =
       alert.relatedMmsi === null
@@ -136,6 +248,22 @@ export class AlertIngestService {
     const written = await this.write(tx, envelope, vesselOrgId);
     if (written === undefined) return undefined;
     const { alert: stored, outcome } = written;
+    await this.alerts.insertOccurrence(tx, {
+      alertId: stored.id,
+      alertOccurredAt: stored.occurredAt,
+      eventId: envelope.id,
+      occurredAt: new Date(alert.occurredAt),
+      outcome: outcome satisfies OccurrenceOutcome,
+      severity: alert.severity,
+      relatedMmsi: alert.relatedMmsi,
+      title: alert.title,
+      message: alert.message,
+      lat: alert.lat,
+      lon: alert.lon,
+      zoneId: alert.zoneId,
+      methodId: alert.methodId,
+      data: alert.data,
+    });
     const planned = await this.planner.plan(
       tx,
       stored,
@@ -207,22 +335,120 @@ export class AlertIngestService {
     );
   }
 
-  /** Pushes the change to clients and wakes the delivery worker (best effort). */
-  private afterCommit(stored: Stored): void {
-    try {
-      this.broadcaster.publish(
-        stored.outcome === 'raised'
-          ? REALTIME_SERVER_EVENTS.ALERT_RAISED
-          : REALTIME_SERVER_EVENTS.ALERT_UPDATED,
-        toRealtimeAlert(stored.alert),
-        alertRooms(stored.owners),
+  /**
+   * Resolves the unresolved alert of the resolution's dedup key once its
+   * raise is stored ({@link awaitRaise}). Like the merge it reads without
+   * row locks and updates conditionally on the status it read; an
+   * acknowledge in between makes it resolve the acknowledged alert, a
+   * resolve over REST leaves nothing to do.
+   *
+   * @throws {RetryableError} when the raise is not stored yet or the alert kept changing
+   */
+  private async storeResolution(
+    client: PoolClient,
+    envelope: ResolutionEnvelope,
+    delivery: ResolutionDelivery,
+  ): Promise<StoredResolution> {
+    const resolution = envelope.data;
+    const tx = transactionDatabase(client);
+    await lockDedupKey(client, resolution.dedupKey);
+    const resolvedAt = new Date(resolution.resolvedAt);
+    for (let attempt = 1; attempt <= MERGE_ATTEMPTS; attempt += 1) {
+      const existing = await this.alerts.findUnresolved(
+        tx,
+        resolution.dedupKey,
       );
-    } catch (error) {
-      this.logger.warn(
-        { err: error, alertId: stored.alert.id },
-        'Alert push failed',
+      if (attempt === 1)
+        await this.awaitRaise(tx, envelope, existing, delivery);
+      if (existing === undefined)
+        return { outcome: 'not_found', alertId: null };
+      const decision = resolveByDetector(existing, resolvedAt);
+      if (!decision.resolved) {
+        return {
+          outcome:
+            decision.ignored === 'later_occurrence'
+              ? 'later_occurrence'
+              : 'not_found',
+          alertId: existing.id,
+        };
+      }
+      const resolved = await this.alerts.resolveForDetector(
+        tx,
+        existing,
+        decision.lifecycle,
+        {
+          reason: resolution.reason,
+          eventId: envelope.id,
+          data: resolution.data,
+        },
+      );
+      if (resolved !== undefined) {
+        const owners = await this.vessels.ownersOf(alertMmsis(resolved), tx);
+        return {
+          outcome: 'resolved',
+          alert: resolved,
+          owners: [...owners.values()].map((owner) => owner.orgId),
+        };
+      }
+      this.logger.debug(
+        { alertId: existing.id, dedupKey: resolution.dedupKey, attempt },
+        'Alert changed during a resolution, resolving again',
       );
     }
+    throw new RetryableError(
+      `Alert of ${resolution.dedupKey} changed concurrently during ${MERGE_ATTEMPTS} resolutions`,
+    );
+  }
+
+  /**
+   * Fails a resolution whose raise is not stored yet with a
+   * `RetryableError` (nak with the consumer's backoff, about 4 minutes over
+   * the default 10 deliveries), so it is applied after the raise: the raise
+   * was nak'd and is redelivered after it, or another instance is storing
+   * it (it holds or waits for the key's lock and has not committed). On the
+   * last delivery the resolution goes ahead instead of being dead-lettered:
+   * it is applied to the inbox as it is (a raise stored after that opens an
+   * alert that stays open).
+   */
+  private async awaitRaise(
+    tx: Executor,
+    envelope: ResolutionEnvelope,
+    unresolved: InboxAlert | undefined,
+    delivery: ResolutionDelivery,
+  ): Promise<void> {
+    const { alertId, dedupKey } = envelope.data;
+    const stored = await this.alerts.raiseStored(
+      tx,
+      ALERTS_CONSUMER,
+      alertId,
+      unresolved,
+    );
+    if (stored) return;
+    if (delivery.deliveryCount < delivery.maxDeliver) {
+      throw new RetryableError(
+        `Raise ${alertId} of ${dedupKey} is not stored yet; resolution ${envelope.id} waits for it`,
+      );
+    }
+    this.logger.warn(
+      {
+        alertId,
+        dedupKey,
+        resolutionId: envelope.id,
+        deliveryCount: delivery.deliveryCount,
+      },
+      'Applying an alert resolution whose raise is not stored after its retries (a raise stored later stays open)',
+    );
+  }
+
+  /** Pushes the change to clients and wakes the delivery worker (best effort). */
+  private afterCommit(stored: Stored): void {
+    this.push(
+      stored.outcome === 'raised'
+        ? REALTIME_SERVER_EVENTS.ALERT_RAISED
+        : REALTIME_SERVER_EVENTS.ALERT_UPDATED,
+      stored.alert,
+      stored.owners,
+    );
     if (stored.planned > 0) this.worker.wake();
     this.logger.log(
       {
@@ -234,5 +460,24 @@ export class AlertIngestService {
       },
       'Alert stored',
     );
+  }
+
+  /** Fans an alert push out to every instance (best effort). */
+  private push(
+    event:
+      | typeof REALTIME_SERVER_EVENTS.ALERT_RAISED
+      | typeof REALTIME_SERVER_EVENTS.ALERT_UPDATED,
+    alert: InboxAlert,
+    owners: Iterable<string | null>,
+  ): void {
+    try {
+      this.broadcaster.publish(
+        event,
+        toRealtimeAlert(alert),
+        alertRooms(owners),
+      );
+    } catch (error) {
+      this.logger.warn({ err: error, alertId: alert.id }, 'Alert push failed');
+    }
   }
 }

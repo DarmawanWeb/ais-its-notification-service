@@ -16,6 +16,7 @@ import { inject } from 'vitest';
 
 import { AppModule } from '../../src/app.module.js';
 import { type Config, configSchema } from '../../src/config.js';
+import { NOTIFICATION_CORS } from '../../src/cors.js';
 import { useRealtimeAdapter } from '../../src/modules/realtime/realtime.adapter.js';
 import { OPENAPI } from '../../src/openapi.options.js';
 import { SERVICE } from '../../src/service.js';
@@ -69,6 +70,7 @@ export async function startTestService(
   const app = await buildTestApp(AppModule, {
     config,
     openapi: OPENAPI,
+    cors: NOTIFICATION_CORS,
     configure: useRealtimeAdapter,
     overrides: [
       { provide: ACCESS_TOKEN_KEY_RESOLVER, useValue: jwt.keyResolver },

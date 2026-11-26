@@ -100,6 +100,10 @@ export const configSchema = defineConfig({
    */
   REALTIME_REAUTH_ON_TOKEN_EXPIRY: envBoolean().default(true),
 
+  // --- Alert inbox ------------------------------------------------------------
+  /** Rows of one `GET /alerts/export.csv` (more matching alerts: `X-Truncated: true`). */
+  ALERT_EXPORT_MAX_ROWS: envInteger(1, 1_000_000).default(100_000),
+
   // --- Housekeeping -----------------------------------------------------------
   /** Processed event ids kept for redelivery detection (≥ the ALERTS max age of 90 d), days. */
   IDEMPOTENCY_RETENTION_DAYS: envInteger(1, 3_650).default(90),

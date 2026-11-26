@@ -23,7 +23,6 @@ import {
 } from './support/receivers.js';
 import { startTestService, type TestService } from './support/test-service.js';
 
-const WEBHOOK_SECRET = 'whsec-integration-secret-0123456789';
 const BOT_TOKEN = '123456:TEST-integration-token';
 
 const DeliveryPageSchema = z.object({
@@ -56,6 +55,18 @@ const WebhookBodySchema = z.object({
   text: z.string(),
 });
 
+const RuleSchema = z.object({
+  id: z.uuid(),
+  channels: z.array(
+    z.object({
+      type: z.string(),
+      target: z.string(),
+      keyId: z.uuid().nullable(),
+      signingSecret: z.string().nullable(),
+    }),
+  ),
+});
+
 describe('alert inbox and deliveries', () => {
   const orgA = newId();
   const mailbox = `ops-${newId()}@example.com`;
@@ -64,6 +75,8 @@ describe('alert inbox and deliveries', () => {
   let telegram: FakeServer;
   let mailpit: MailpitClient;
   let vessel: number;
+  /** Key of the webhook channel of the organization's rule (shown once at creation). */
+  let webhookKey: { id: string; secret: string };
 
   /** Deliveries of an alert as the organization's fleet manager sees them. */
   async function deliveriesOf(alertId: string): Promise<DeliveryRow[]> {
@@ -79,10 +92,10 @@ describe('alert inbox and deliveries', () => {
     return DeliveryPageSchema.parse(response.json()).data;
   }
 
-  async function createRule(
+  async function createRuleWithKeys(
     claims: { roles: ('fleet_manager' | 'authority')[]; orgId: string },
     body: Record<string, unknown>,
-  ): Promise<string> {
+  ): Promise<z.output<typeof RuleSchema>> {
     const response = await service.app.inject({
       method: 'POST',
       url: '/api/v2/alert-rules',
@@ -90,7 +103,14 @@ describe('alert inbox and deliveries', () => {
       payload: body,
     });
     expect(response.statusCode, response.body).toBe(201);
-    return z.object({ id: z.uuid() }).parse(response.json()).id;
+    return RuleSchema.parse(response.json());
+  }
+
+  async function createRule(
+    claims: { roles: ('fleet_manager' | 'authority')[]; orgId: string },
+    body: Record<string, unknown>,
+  ): Promise<string> {
+    return (await createRuleWithKeys(claims, body)).id;
   }
 
   beforeAll(async () => {
@@ -109,7 +129,6 @@ describe('alert inbox and deliveries', () => {
     mailpit = new MailpitClient(inject('infra').mailpitUrl);
     service = await startTestService({
       env: {
-        WEBHOOK_SIGNING_SECRET: WEBHOOK_SECRET,
         WEBHOOK_ALLOW_PRIVATE_TARGETS: 'true',
         TELEGRAM_BOT_TOKEN: BOT_TOKEN,
         TELEGRAM_API_BASE: telegram.url,
@@ -125,7 +144,7 @@ describe('alert inbox and deliveries', () => {
       orgId: orgA,
       name: 'KM Bahari Satu',
     });
-    await createRule(
+    const pipelineRule = await createRuleWithKeys(
       { roles: ['fleet_manager'], orgId: orgA },
       {
         name: 'Pipeline warnings',
@@ -139,6 +158,15 @@ describe('alert inbox and deliveries', () => {
         ],
       },
     );
+    // Only the webhook channel has a key, and its secret is in this response only.
+    expect(
+      pipelineRule.channels.map((channel) => channel.keyId !== null),
+    ).toEqual([false, false, true]);
+    const [, , hook] = pipelineRule.channels;
+    webhookKey = {
+      id: z.uuid().parse(hook?.keyId),
+      secret: z.string().startsWith('whsec_').parse(hook?.signingSecret),
+    };
   });
 
   afterAll(async () => {
@@ -195,15 +223,16 @@ describe('alert inbox and deliveries', () => {
     });
     expect(message?.text).toContain('KM Bahari Satu');
 
-    // Webhook: both attempts signed over "<timestamp>.<raw body>".
+    // Webhook: both attempts signed over "<timestamp>.<raw body>" with the channel's own key.
     expect(webhook.requests).toHaveLength(2);
     for (const request of webhook.requests) {
       const timestamp = String(request.headers['x-ais-its-timestamp']);
       const signature = String(request.headers['x-ais-its-signature']);
       expect(signature).toMatch(/^sha256=[0-9a-f]{64}$/);
+      expect(request.headers['x-ais-its-key-id']).toBe(webhookKey.id);
       expect(
         verifyWebhookSignature(
-          WEBHOOK_SECRET,
+          webhookKey.secret,
           timestamp,
           request.rawBody,
           signature,

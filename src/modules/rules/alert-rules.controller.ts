@@ -3,6 +3,7 @@ import {
   type Principal,
   RequirePermissions,
 } from '@darmawanweb/ais-its-nest/auth';
+import { IntParam, UuidParam } from '@darmawanweb/ais-its-nest/http';
 import {
   Body,
   Controller,
@@ -10,8 +11,6 @@ import {
   Get,
   HttpCode,
   HttpStatus,
-  Param,
-  ParseUUIDPipe,
   Patch,
   Post,
   Query,
@@ -45,7 +44,11 @@ export class AlertRulesController {
   constructor(private readonly rules: AlertRulesService) {}
 
   @Post()
-  @ApiOperation({ summary: 'Create an alert rule in the active organization' })
+  @ApiOperation({
+    summary: 'Create an alert rule in the active organization',
+    description:
+      'Every webhook channel gets its own signing key: `channels[i].signingSecret` is in this response only.',
+  })
   @ApiCreatedResponse({ type: AlertRuleDto })
   async create(
     @Body() body: CreateAlertRuleDto,
@@ -74,17 +77,22 @@ export class AlertRulesController {
   @ApiOperation({ summary: 'Get an alert rule' })
   @ApiOkResponse({ type: AlertRuleDto })
   async get(
-    @Param('id', new ParseUUIDPipe()) id: string,
+    @UuidParam() id: string,
     @CurrentPrincipal() principal: Principal,
   ): Promise<AlertRuleDto> {
-    return new AlertRuleDto(await this.rules.get(id, principal));
+    return new AlertRuleDto(await this.rules.view(id, principal));
   }
 
   @Patch(':id')
-  @ApiOperation({ summary: 'Change an alert rule' })
+  @ApiOperation({
+    summary: 'Change an alert rule',
+    description:
+      'A webhook target new to the rule gets its own signing key (`channels[i].signingSecret` in this response ' +
+      'only); targets that stay keep their key; removed targets lose theirs.',
+  })
   @ApiOkResponse({ type: AlertRuleDto })
   async update(
-    @Param('id', new ParseUUIDPipe()) id: string,
+    @UuidParam() id: string,
     @Body() body: UpdateAlertRuleDto,
     @CurrentPrincipal() principal: Principal,
     @Req() request: FastifyRequest,
@@ -94,12 +102,35 @@ export class AlertRulesController {
     );
   }
 
+  @Post(':id/channels/:index/rotate-secret')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Replace the signing secret of a webhook channel',
+    description:
+      'The channel at `index` of `channels` gets a new key: the response carries its `keyId` and, only here, ' +
+      'its `signingSecret`. Deliveries from now on (pending retries included) are signed with it; receivers ' +
+      'tell the keys apart by `X-AIS-ITS-Key-Id`. A webhook from before 0.2.0 gets its first own key (it was ' +
+      'signed with the deployment secret). 404 RULE_CHANNEL_NOT_FOUND for an index without channel, 422 ' +
+      'RULE_CHANNEL_NOT_WEBHOOK for other channel types.',
+  })
+  @ApiOkResponse({ type: AlertRuleDto })
+  async rotateSecret(
+    @UuidParam() id: string,
+    @IntParam('index', { min: 0, max: 9 }) index: number,
+    @CurrentPrincipal() principal: Principal,
+    @Req() request: FastifyRequest,
+  ): Promise<AlertRuleDto> {
+    return new AlertRuleDto(
+      await this.rules.rotateSecret(id, index, principal, request),
+    );
+  }
+
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Delete an alert rule and its delivery history' })
   @ApiNoContentResponse()
   async remove(
-    @Param('id', new ParseUUIDPipe()) id: string,
+    @UuidParam() id: string,
     @CurrentPrincipal() principal: Principal,
     @Req() request: FastifyRequest,
   ): Promise<void> {

@@ -38,6 +38,12 @@ export interface InboxAlert {
   readonly resolvedAt: Date | null;
   readonly occurrences: number;
   readonly lastOccurredAt: Date;
+  /** `reason` of the `alert.resolved.v1` that resolved it (`null`: unresolved, or resolved by a user). */
+  readonly resolutionReason: string | null;
+  /** Envelope id of the `alert.resolved.v1` that resolved it. */
+  readonly resolutionEventId: string | null;
+  /** `data` of the `alert.resolved.v1` that resolved it (localizable text). */
+  readonly resolutionData: Record<string, unknown> | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }
@@ -121,6 +127,9 @@ export function newInboxAlert(
     resolvedAt: null,
     occurrences: 1,
     lastOccurredAt: occurredAt,
+    resolutionReason: null,
+    resolutionEventId: null,
+    resolutionData: null,
   };
 }
 
@@ -147,10 +156,20 @@ export function toRealtimeAlert(alert: InboxAlert): RealtimeAlert {
   };
 }
 
+/** The vessel and the related vessel of an alert (whose owners may read it). */
+export function alertMmsis(
+  alert: Pick<InboxAlert, 'mmsi' | 'relatedMmsi'>,
+): number[] {
+  return alert.relatedMmsi === null
+    ? [alert.mmsi]
+    : [alert.mmsi, alert.relatedMmsi];
+}
+
 /**
  * Rooms an alert is pushed to (spec §9): `authority` and the organization
- * rooms of the owners of its vessel and related vessel — the same principals
- * that may read it over REST (spec §8.5).
+ * rooms of the current owners of its vessel and related vessel (the live
+ * `FLEET` projection, never `alerts.org_id`, the owner at ingest time) —
+ * the same principals that may read it over REST (spec §8.5).
  */
 export function alertRooms(ownerOrgIds: Iterable<string | null>): string[] {
   const rooms = new Set<string>([AUTHORITY_ROOM]);
