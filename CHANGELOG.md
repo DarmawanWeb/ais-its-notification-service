@@ -6,8 +6,50 @@ All notable changes to `ais-its-notification-service` are documented in this fil
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-23
+
+Upgrade to `@darmawanweb/ais-its-contracts` 0.4.0 and `@darmawanweb/ais-its-nest` 0.3.0 (the
+local workarounds give way to the kit), inbox alerts resolved by their detectors
+(`alert.resolved.v1`), the web app's backend gaps, and the hardening after the 0.1.0 review.
+**Deploy before safety and surveillance 0.2** (they publish `alert.resolved.v1`; 0.1 skips it).
+
 ### Added
 
+- **Detector resolutions**: the `notification-alerts` consumer handles `alert.resolved.v1` (same
+  durable and subject as the raise, so a raise and its resolution stay ordered): the unresolved
+  (open or acknowledged) alert of the `dedupKey` is resolved by the system (`resolved_by` `NULL`,
+  `resolved_at` = `resolvedAt`, reason, event id and data kept) and leaves `open_alerts`, unless
+  it merged an occurrence later than `resolvedAt`; idempotent by envelope id, no rule deliveries,
+  `alert:updated` through the fan-out. Pure rule `resolveByDetector` (`notify.alert_lifecycle`);
+  metric `aisits_alert_resolutions_total{outcome}`.
+- `AlertDto`: `messageKey` / `messageParams` (platform convention: read from `data` and
+  validated, otherwise `null`), `resolutionReason`, `resolutionMessageKey`,
+  `resolutionMessageParams`, `resolutionEventId`.
+- `GET /api/v2/alerts/:id/occurrences`: the occurrence history (every stored `alert.raised.v1`
+  with its own severity, texts and data; cursor pages, newest first).
+- `GET /api/v2/alerts/unread-count` and `POST /api/v2/alerts/read { upTo? }`: a read mark per user
+  and active organization (only moves forward; bodiless requests allowed).
+- `GET /api/v2/alerts/stats/series?from&to&bucket=1h|1d&groupBy=severity|type|domain&tz`: counts
+  per local hour or day of the first occurrence with the filters and tenancy of the inbox, empty
+  buckets included (at most 1 000).
+- `GET /api/v2/alerts/export.csv`: the filters of `GET /alerts` as streamed CSV, headers in `id` /
+  `en` by `Accept-Language`, formula cells neutralized, at most `ALERT_EXPORT_MAX_ROWS` (default
+  100 000) rows with `X-Truncated: true` beyond; `Content-Disposition`, `Content-Language` and
+  `X-Truncated` exposed by CORS.
+- **Per-channel webhook signing keys**: every webhook channel gets its own secret, shown once in the
+  `POST` / `PATCH` response (`channels[i].signingSecret`, `keyId` always), `POST
+/api/v2/alert-rules/:id/channels/:index/rotate-secret` (404 `RULE_CHANNEL_NOT_FOUND`, 422
+  `RULE_CHANNEL_NOT_WEBHOOK`) and the header `X-AIS-ITS-Key-Id`; test notifications report their
+  `keyId` (a throwaway `test` key for targets that are no channel yet).
+- `GET /api/v2/notifications/deliveries/summary?ruleId&from&to`: `{ sent, failed, pending, queued,
+total, lastDeliveredAt, successRate }` of the organization's rules (default 30 days).
+- Migration `0003_resolutions_history_read_keys`: `alerts.resolution_reason`,
+  `resolution_event_id`, `resolution_data`; hypertable `alert_occurrences` (retention 2 years);
+  tables `alert_read_marks` and `webhook_keys`.
+- Tests: two-instance resolutions and fan-out (`test/resolutions.int.test.ts`), inbox API
+  (`test/inbox-api.int.test.ts`), webhook keys and the delivery summary
+  (`test/webhook-keys.int.test.ts`); unit tests of the resolution rule, localizable texts, CSV and
+  `Accept-Language` helpers, the summary and the catalogued method ids.
 - Migration `0002_review_hardening`: table `open_alerts` (the unresolved alert of each dedup key),
   tombstones in the `vessels` projection (`deleted_at`, mmsi unique among live vessels only), the
   `sending` claim of `email_log` (`claimed_until`) and an index of queued deliveries.
@@ -17,10 +59,28 @@ All notable changes to `ais-its-notification-service` are documented in this fil
 - Hourly requeue of alert e-mails whose `NOTIFY` request was lost (queued for an hour without
   progress; failed after the 7-day NOTIFY max age), and pruning of `open_alerts` entries of alerts
   dropped by the retention policy.
-- `@OptionalNotNull()` for optional body fields that refuse `null`.
 
 ### Changed
 
+- Dependencies: contracts `^0.4.0`, kit `^0.3.0`; no direct `prom-client` (metric types from
+  `@darmawanweb/ais-its-nest/metrics`); `.pnpmfile.cjs` of the template (no kit entry,
+  `@nestjs/terminus` gRPC peers kept out of the production install).
+- The alert fan-out uses the contracts core subscription `notification-realtime-fanout`
+  (`subjects.notificationRealtime()`, `RealtimeAlertFanoutSchema`, `delivery: 'fanout'`, payload
+  validated by the kit); subject and payload are unchanged, so 0.1 and 0.2 instances interoperate.
+- `WEBHOOK_SIGNING_SECRET` only signs webhook channels created before 0.2.0 (key id `deployment`)
+  until their secret is rotated; the webhook channel no longer needs it (no more
+  `CHANNEL_NOT_CONFIGURED` for webhooks).
+- Kit helpers replace local ones: `@IsOptionalNotNull()`, `isUniqueViolation`, `@UuidParam()` /
+  `@IntParam()` (`400 VALIDATION_FAILED` with field errors for malformed path parameters),
+  `MIGRATIONS_DIR` resolved from the package (migrations found from any working directory);
+  test fixtures from `@darmawanweb/ais-its-nest/testing`.
+- The FLEET projection and the alerts consumer are exhaustive switches over the exact consumer
+  envelopes.
+- The `notify.*` method ids are catalogued (contracts 0.4.0): the methodology endpoint shows their
+  catalog entries; the "proposed id" remarks are gone.
+- Bodiless `POST`s with `Content-Type: application/json` (e.g. `/alerts/:id/ack`) are accepted
+  (kit 0.3).
 - Rule scope `all` belongs to authority organizations: the default and the right to set it come
   from the `authority` role in the rule's own organization (no longer from `super_admin`); every
   change of a rule with scope `all` needs that role or `super_admin`. Updates apply only while
@@ -52,6 +112,12 @@ All notable changes to `ais-its-notification-service` are documented in this fil
   vessel for good (its former owner kept seeing its alerts and matching rules).
 - Removed the stale `@types/nodemailer` (8.x): nodemailer 10 ships its own types.
 
+### Removed
+
+- Local workarounds now in the kit or contracts: `src/db/errors.ts` (and its spec), the local
+  `REALTIME_FANOUT_SUBSCRIPTION` / `FanoutMessageSchema` with `queue: false`, the `event.type`
+  if/else chain of the FLEET projection, the local alert fixture.
+
 ## [0.1.0] - 2026-11-21
 
 ### Added
@@ -81,5 +147,6 @@ All notable changes to `ais-its-notification-service` are documented in this fil
 - Metrics `aisits_ws_connections`, `aisits_notifications_sent_total{channel,outcome}` and
   ingestion, e-mail and realtime counters; `GET /api/v2/notifications/methodology`.
 
-[Unreleased]: https://github.com/DarmawanWeb/ais-its-notification-service/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/DarmawanWeb/ais-its-notification-service/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/DarmawanWeb/ais-its-notification-service/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/DarmawanWeb/ais-its-notification-service/releases/tag/v0.1.0

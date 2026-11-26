@@ -54,8 +54,43 @@ function toColumns(fields: AlertRuleChanges): RuleColumns {
 export class AlertRulesRepository {
   constructor(@InjectDb() private readonly db: Executor) {}
 
-  async insert(rule: NewAlertRule): Promise<AlertRule> {
-    const [row] = await this.db
+  /** Runs `work` in one transaction (rule changes with their webhook keys). */
+  transaction<T>(work: (tx: Executor) => Promise<T>): Promise<T> {
+    return this.db.transaction(work);
+  }
+
+  /**
+   * Reads a rule with a row lock (`FOR UPDATE`) in the caller's transaction,
+   * while it still has `expectedScope` when given.
+   */
+  async lock(
+    executor: Executor,
+    id: string,
+    tenancy: RuleTenancy,
+    expectedScope?: RuleScope,
+  ): Promise<AlertRule | undefined> {
+    const [row] = await executor
+      .select()
+      .from(alertRules)
+      .where(
+        and(
+          eq(alertRules.id, id),
+          tenancyCondition(tenancy),
+          expectedScope === undefined
+            ? undefined
+            : eq(alertRules.scope, expectedScope),
+        ),
+      )
+      .limit(1)
+      .for('update');
+    return row;
+  }
+
+  async insert(
+    rule: NewAlertRule,
+    executor: Executor = this.db,
+  ): Promise<AlertRule> {
+    const [row] = await executor
       .insert(alertRules)
       .values({
         ...toColumns(rule),
@@ -125,8 +160,9 @@ export class AlertRulesRepository {
     tenancy: RuleTenancy,
     expectedScope: RuleScope,
     changes: AlertRuleChanges,
+    executor: Executor = this.db,
   ): Promise<AlertRule | undefined> {
-    const [row] = await this.db
+    const [row] = await executor
       .update(alertRules)
       .set({ ...toColumns(changes), updatedAt: sql`now()` })
       .where(

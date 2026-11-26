@@ -8,6 +8,7 @@ import {
 import {
   CursorPageInfoDto,
   CursorQueryDto,
+  TimeRangeQueryDto,
 } from '@darmawanweb/ais-its-nest/http';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsIn, IsOptional, IsUUID } from 'class-validator';
@@ -122,4 +123,100 @@ export class ListDeliveriesQuery extends CursorQueryDto {
   @IsOptional()
   @IsIn(DELIVERY_STATUSES)
   readonly status?: DeliveryStatus;
+}
+
+/** Query of `GET /notifications/deliveries/summary`. */
+export class DeliverySummaryQuery extends TimeRangeQueryDto {
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description: 'One rule (default: every rule of the organization)',
+  })
+  @IsOptional()
+  @IsUUID()
+  readonly ruleId?: string;
+}
+
+/** Counts of `GET /notifications/deliveries/summary` (service result). */
+export interface DeliverySummary {
+  readonly from: Date;
+  readonly to: Date;
+  readonly counts: Readonly<Record<DeliveryStatus, number>>;
+  readonly lastDeliveredAt: Date | null;
+}
+
+/**
+ * `GET /notifications/deliveries/summary`: deliveries of the organization's
+ * rules planned within `[from, to]`, by status.
+ */
+export class DeliverySummaryDto {
+  @ApiProperty({ format: 'date-time' })
+  readonly from: string;
+
+  @ApiProperty({ format: 'date-time' })
+  readonly to: string;
+
+  @ApiProperty({
+    minimum: 0,
+    description: 'Delivered (e-mail: accepted by the SMTP server)',
+  })
+  readonly sent: number;
+
+  @ApiProperty({ minimum: 0, description: 'Failed for good' })
+  readonly failed: number;
+
+  @ApiProperty({
+    minimum: 0,
+    description:
+      'Waiting for their next attempt, or being attempted (`pending` and `sending`)',
+  })
+  readonly pending: number;
+
+  @ApiProperty({
+    minimum: 0,
+    description: 'E-mails handed to the e-mail pipeline, not yet sent',
+  })
+  readonly queued: number;
+
+  @ApiProperty({ minimum: 0 })
+  readonly total: number;
+
+  @ApiProperty({
+    type: String,
+    format: 'date-time',
+    nullable: true,
+    description: 'Latest delivery that was sent',
+  })
+  readonly lastDeliveredAt: string | null;
+
+  @ApiProperty({
+    type: Number,
+    nullable: true,
+    minimum: 0,
+    maximum: 1,
+    example: 0.96,
+    description: 'sent / (sent + failed), 4 decimals; null while none finished',
+  })
+  readonly successRate: number | null;
+
+  constructor(summary: DeliverySummary) {
+    const { counts } = summary;
+    this.from = summary.from.toISOString();
+    this.to = summary.to.toISOString();
+    this.sent = counts.sent;
+    this.failed = counts.failed;
+    this.pending = counts.pending + counts.sending;
+    this.queued = counts.queued;
+    this.total =
+      counts.sent +
+      counts.failed +
+      counts.pending +
+      counts.sending +
+      counts.queued;
+    this.lastDeliveredAt = summary.lastDeliveredAt?.toISOString() ?? null;
+    const finished = counts.sent + counts.failed;
+    this.successRate =
+      finished === 0
+        ? null
+        : Math.round((counts.sent / finished) * 10_000) / 10_000;
+  }
 }

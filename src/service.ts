@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 import * as z from 'zod';
 
@@ -23,8 +24,14 @@ const packageJson = readPackageJson();
  * of `config.ts`, the OpenAPI document and the telemetry resource use it.
  */
 export const SERVICE = Object.freeze({
-  /** `SERVICE_NAME`: logs, metrics, event `source`, `audit.v1.<name>`, route prefix. */
+  /** `SERVICE_NAME`: logs, metrics, event `source`, `audit.v1.<name>`. */
   name: 'notification',
+  /**
+   * Path segment of this service's own routes, `/api/v2/<routePrefix>/…`
+   * (methodology): the gateway routes only `/api/v2/alerts`,
+   * `/api/v2/alert-rules`, `/api/v2/notifications` and `/ws` here (spec §12).
+   */
+  routePrefix: 'notifications',
   /** Package, repository and image name. */
   packageName: packageJson.name,
   /** PostgreSQL schema, owned by the role `<schema>_svc`. */
@@ -37,3 +44,12 @@ export const SERVICE = Object.freeze({
   /** The release version: package.json is its single source. */
   version: packageJson.version,
 });
+
+/**
+ * The migrations directory of this package, resolved from this module (not
+ * from the working directory), so the service and `pnpm migrate` find it
+ * wherever they are started (`dist/../migrations`, `src/../migrations`).
+ */
+export const MIGRATIONS_DIR = fileURLToPath(
+  new URL('../migrations', import.meta.url),
+);

@@ -16,13 +16,10 @@ import { Type } from 'class-transformer';
 import { IsIn, IsInt, IsOptional, Matches, Max, Min } from 'class-validator';
 
 /**
- * Query of `GET /alerts` (cursor list, spec §5): `from` / `to` bound the first
- * occurrence (`to` defaults to now, no lower bound by default).
+ * Filters of the alert inbox (`GET /alerts`, `/alerts/export.csv`,
+ * `/alerts/stats/series`): `from` / `to` bound the first occurrence.
  */
-export class ListAlertsQuery extends IntersectionType(
-  CursorQueryDto,
-  TimeRangeQueryDto,
-) {
+export class AlertFilterQuery extends TimeRangeQueryDto {
   @ApiPropertyOptional({ enum: ALERT_STATUSES })
   @IsOptional()
   @IsIn(ALERT_STATUSES)
@@ -54,3 +51,19 @@ export class ListAlertsQuery extends IntersectionType(
   @Max(999_999_999)
   readonly mmsi?: number;
 }
+
+/**
+ * Query of `GET /alerts` (cursor list, spec §5): `from` / `to` bound the first
+ * occurrence (`to` defaults to now, no lower bound by default).
+ */
+export class ListAlertsQuery extends IntersectionType(
+  CursorQueryDto,
+  AlertFilterQuery,
+) {}
+
+/**
+ * Query of `GET /alerts/export.csv`: the filters of `GET /alerts` (`to`
+ * defaults to now, no lower bound by default), every matching row up to
+ * `ALERT_EXPORT_MAX_ROWS`.
+ */
+export class ExportAlertsQuery extends AlertFilterQuery {}

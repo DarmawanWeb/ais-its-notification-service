@@ -4,6 +4,7 @@ import {
   RequirePermissions,
 } from '@darmawanweb/ais-its-nest/auth';
 import { decodeQueryCursor } from '@darmawanweb/ais-its-nest/http';
+import { ValidationFailedError } from '@darmawanweb/ais-its-nest';
 import {
   Body,
   Controller,
@@ -18,12 +19,20 @@ import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import * as z from 'zod';
 
-import { DeliveryPageDto, ListDeliveriesQuery } from './dto/delivery.dto.js';
+import {
+  DeliveryPageDto,
+  DeliverySummaryDto,
+  DeliverySummaryQuery,
+  ListDeliveriesQuery,
+} from './dto/delivery.dto.js';
 import {
   TestNotificationDto,
   TestNotificationResultDto,
 } from './dto/test-notification.dto.js';
 import { NotificationsService } from './notifications.service.js';
+
+/** Default period of `GET /notifications/deliveries/summary`: 30 days. */
+const SUMMARY_DEFAULT_MS = 30 * 86_400_000;
 
 const DeliveryCursorSchema = z.object({
   createdAt: z.iso.datetime(),
@@ -52,6 +61,41 @@ export class NotificationsController {
   ): Promise<TestNotificationResultDto> {
     return new TestNotificationResultDto(
       await this.notifications.test(body, principal, request),
+    );
+  }
+
+  @Get('deliveries/summary')
+  @RequirePermissions('alert_rule:write')
+  @ApiOperation({
+    summary: 'Delivery counts of the alert rules of the organization',
+    description:
+      'Deliveries planned within [from, to] (default: the last 30 days) by status, the latest sent delivery and ' +
+      'the success rate sent / (sent + failed); `ruleId` narrows it to one rule.',
+  })
+  @ApiOkResponse({ type: DeliverySummaryDto })
+  async deliverySummary(
+    @Query() query: DeliverySummaryQuery,
+    @CurrentPrincipal() principal: Principal,
+  ): Promise<DeliverySummaryDto> {
+    const to = query.to === undefined ? new Date() : new Date(query.to);
+    const from =
+      query.from === undefined
+        ? new Date(to.getTime() - SUMMARY_DEFAULT_MS)
+        : new Date(query.from);
+    if (from > to) {
+      throw new ValidationFailedError([
+        {
+          field: 'from',
+          message: 'from must not be after to',
+          code: 'timeRange',
+        },
+      ]);
+    }
+    return new DeliverySummaryDto(
+      await this.notifications.summarizeDeliveries(
+        { ruleId: query.ruleId, from, to },
+        principal,
+      ),
     );
   }
 

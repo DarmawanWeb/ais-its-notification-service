@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 /** Header carrying the signature: `sha256=<hex>`. */
 export const WEBHOOK_SIGNATURE_HEADER = 'X-AIS-ITS-Signature';
@@ -9,15 +9,41 @@ export const WEBHOOK_TIMESTAMP_HEADER = 'X-AIS-ITS-Timestamp';
 /** Header carrying the delivery id (receivers deduplicate retries with it). */
 export const WEBHOOK_DELIVERY_HEADER = 'X-AIS-ITS-Delivery';
 
+/**
+ * Header naming the key that signed the request, so receivers can hold
+ * several secrets while they rotate: the channel's key id (a UUID),
+ * {@link DEPLOYMENT_KEY_ID} or {@link TEST_KEY_ID}.
+ */
+export const WEBHOOK_KEY_ID_HEADER = 'X-AIS-ITS-Key-Id';
+
+/** Key id of the deployment secret (`WEBHOOK_SIGNING_SECRET`) of channels created before 0.2.0. */
+export const DEPLOYMENT_KEY_ID = 'deployment';
+
+/** Key id of the throwaway key of a test sent to a target that is no channel yet. */
+export const TEST_KEY_ID = 'test';
+
+/** Prefix of generated signing secrets (recognizable in secret scanners). */
+export const WEBHOOK_SECRET_PREFIX = 'whsec_';
+
+/** A key that signs webhook requests. */
+export interface WebhookSigningKey {
+  /** `X-AIS-ITS-Key-Id`. */
+  readonly id: string;
+  readonly secret: string;
+}
+
+/** A new random signing secret: `whsec_` + 32 random bytes, base64url. */
+export function newWebhookSecret(): string {
+  return `${WEBHOOK_SECRET_PREFIX}${randomBytes(32).toString('base64url')}`;
+}
+
 const SIGNATURE_PREFIX = 'sha256=';
 
 /**
- * Signature of a webhook request (spec §13.9): HMAC-SHA256 with
- * `WEBHOOK_SIGNING_SECRET` over `<timestamp>.<raw body>`, hex encoded and
- * prefixed with `sha256=`. Signing the timestamp lets receivers reject
- * replayed requests (see {@link verifyWebhookSignature}).
- *
- * Proposed method id (not yet in docs/references/methods.json).
+ * Signature of a webhook request (spec §13.9): HMAC-SHA256 with the secret
+ * of the channel's key (`X-AIS-ITS-Key-Id`) over `<timestamp>.<raw body>`,
+ * hex encoded and prefixed with `sha256=`. Signing the timestamp lets
+ * receivers reject replayed requests (see {@link verifyWebhookSignature}).
  *
  * @method notify.webhook_signature
  * @see ../../../../docs/PLATFORM_SPEC.md §13.9 — `X-AIS-ITS-Signature: sha256=<hmac>`

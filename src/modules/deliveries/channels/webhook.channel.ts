@@ -8,10 +8,13 @@ import { Injectable } from '@nestjs/common';
 
 import type { Config } from '../../../config.js';
 import {
+  DEPLOYMENT_KEY_ID,
   signWebhookPayload,
   WEBHOOK_DELIVERY_HEADER,
+  WEBHOOK_KEY_ID_HEADER,
   WEBHOOK_SIGNATURE_HEADER,
   WEBHOOK_TIMESTAMP_HEADER,
+  type WebhookSigningKey,
   webhookTimestamp,
 } from '../../../domain/webhook-signature.js';
 import {
@@ -81,28 +84,35 @@ interface HttpOutcome {
 /**
  * Webhook channel: `POST` of a JSON body signed with
  * `X-AIS-ITS-Signature: sha256=<hex HMAC-SHA256 of "<timestamp>.<body>">`
- * and `X-AIS-ITS-Timestamp` (spec §13.9), plus `X-AIS-ITS-Delivery` for
- * receiver-side deduplication. Each attempt has a total deadline
- * (`WEBHOOK_TIMEOUT_MS`); redirects are not followed; loopback and private
- * targets are refused unless `WEBHOOK_ALLOW_PRIVATE_TARGETS`.
+ * and `X-AIS-ITS-Timestamp` (spec §13.9) with the channel's own key, named
+ * by `X-AIS-ITS-Key-Id`, plus `X-AIS-ITS-Delivery` for receiver-side
+ * deduplication. Each attempt has a total deadline (`WEBHOOK_TIMEOUT_MS`);
+ * redirects are not followed; loopback and private targets are refused
+ * unless `WEBHOOK_ALLOW_PRIVATE_TARGETS`.
  */
 @Injectable()
 export class WebhookChannel {
   constructor(@InjectConfig() private readonly config: Config) {}
 
   /**
-   * Posts `body`: 2xx = `sent`; 408, 429 and 5xx (and network errors) are
-   * retried (honouring `Retry-After`); other statuses are permanent.
+   * Posts `body` signed with `key`: 2xx = `sent`; 408, 429 and 5xx (and
+   * network errors) are retried (honouring `Retry-After`); other statuses
+   * are permanent.
+   *
+   * @param key - the channel's key; `undefined` for a channel from before
+   *   0.2.0, signed with the deployment secret (`WEBHOOK_SIGNING_SECRET`,
+   *   key id `deployment`) — permanently failed while that is unset
    */
   async post(
     url: string,
     body: unknown,
     deliveryId: string,
+    key: WebhookSigningKey | undefined,
   ): Promise<ChannelResult> {
-    const secret = this.config.WEBHOOK_SIGNING_SECRET;
-    if (secret === undefined) {
+    const signing = key ?? this.deploymentKey();
+    if (signing === undefined) {
       return failed(
-        'Webhooks are not configured (WEBHOOK_SIGNING_SECRET)',
+        'The webhook channel has no signing key: rotate its secret (or set WEBHOOK_SIGNING_SECRET)',
         true,
       );
     }
@@ -126,11 +136,12 @@ export class WebhookChannel {
           'content-type': 'application/json',
           'user-agent': `ais-its-notification/${this.config.SERVICE_VERSION}`,
           [WEBHOOK_SIGNATURE_HEADER]: signWebhookPayload(
-            secret,
+            signing.secret,
             timestamp,
             raw,
           ),
           [WEBHOOK_TIMESTAMP_HEADER]: timestamp,
+          [WEBHOOK_KEY_ID_HEADER]: signing.id,
           [WEBHOOK_DELIVERY_HEADER]: deliveryId,
         },
         allowPrivate,
@@ -158,6 +169,17 @@ export class WebhookChannel {
         false,
       );
     }
+  }
+
+  /** Whether channels from before 0.2.0 can be signed (`WEBHOOK_SIGNING_SECRET`). */
+  hasDeploymentKey(): boolean {
+    return this.config.WEBHOOK_SIGNING_SECRET !== undefined;
+  }
+
+  /** The deployment secret of channels created before 0.2.0, if configured. */
+  private deploymentKey(): WebhookSigningKey | undefined {
+    const secret = this.config.WEBHOOK_SIGNING_SECRET;
+    return secret === undefined ? undefined : { id: DEPLOYMENT_KEY_ID, secret };
   }
 
   /**

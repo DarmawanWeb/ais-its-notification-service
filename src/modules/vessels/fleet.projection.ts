@@ -21,17 +21,25 @@ export class FleetProjection {
 
   @EventHandler({ consumer: 'notification-fleet', concurrency: 4 })
   async onVessel(event: ConsumerEnvelope<'notification-fleet'>): Promise<void> {
-    // The consumer only receives the two FLEET types (contracts CONSUMERS).
-    if (event.type === EVENT_TYPES.FLEET_VESSEL_UPSERTED) {
-      const applied = await this.vessels.upsert(event.data);
-      if (!applied) {
-        this.logger.debug(
-          { vesselId: event.data.id, eventId: event.id },
-          'Ignored a vessel snapshot older than the stored one',
-        );
+    // Exactly the two FLEET types (contracts CONSUMERS keep literal types).
+    switch (event.type) {
+      case EVENT_TYPES.FLEET_VESSEL_UPSERTED: {
+        const applied = await this.vessels.upsert(event.data);
+        if (!applied) {
+          this.logger.debug(
+            { vesselId: event.data.id, eventId: event.id },
+            'Ignored a vessel snapshot older than the stored one',
+          );
+        }
+        return;
       }
-    } else if (event.type === EVENT_TYPES.FLEET_VESSEL_DELETED) {
-      await this.vessels.markDeleted(event.data, new Date(event.time));
+      case EVENT_TYPES.FLEET_VESSEL_DELETED:
+        await this.vessels.markDeleted(event.data, new Date(event.time));
+        return;
+      default: {
+        const unreachable: never = event;
+        throw new Error(`Unhandled FLEET event ${String(unreachable)}`);
+      }
     }
   }
 }

@@ -10,7 +10,7 @@ import type { Config } from '../../../config.js';
 import type { RuleChannel } from '../../rules/alert-rule.js';
 import { channelTargetIssue } from './targets.js';
 
-/** A channel whose configuration is missing (`TELEGRAM_BOT_TOKEN`, `WEBHOOK_SIGNING_SECRET`). */
+/** A channel whose configuration is missing (`TELEGRAM_BOT_TOKEN`). */
 export class ChannelNotConfiguredError extends DomainError {
   constructor(channels: readonly NotificationChannel[]) {
     super('CHANNEL_NOT_CONFIGURED', {
@@ -27,15 +27,17 @@ export class ChannelNotConfiguredError extends DomainError {
 export class ChannelPolicy {
   constructor(@InjectConfig() private readonly config: Config) {}
 
-  /** E-mail always works; Telegram needs a bot token, webhooks a signing secret. */
+  /**
+   * E-mail always works, and so do webhooks (every channel gets its own
+   * signing key); Telegram needs a bot token.
+   */
   isConfigured(type: NotificationChannel): boolean {
     switch (type) {
       case 'email':
+      case 'webhook':
         return true;
       case 'telegram':
         return this.config.TELEGRAM_BOT_TOKEN !== undefined;
-      case 'webhook':
-        return this.config.WEBHOOK_SIGNING_SECRET !== undefined;
     }
   }
 

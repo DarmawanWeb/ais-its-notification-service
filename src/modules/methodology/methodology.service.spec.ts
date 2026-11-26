@@ -4,7 +4,11 @@ import {
 } from '@darmawanweb/ais-its-contracts/references';
 import { describe, expect, it } from 'vitest';
 
-import type { MethodCatalog } from './method-catalog.js';
+import { IMPLEMENTED_METHOD_IDS } from './implemented-methods.js';
+import {
+  CONTRACTS_METHOD_CATALOG,
+  type MethodCatalog,
+} from './method-catalog.js';
 import { MethodologyDto } from './methodology.dto.js';
 import { MethodologyService } from './methodology.service.js';
 
@@ -81,5 +85,17 @@ describe('MethodologyService', () => {
       'b.second',
       'cii.attained',
     ]);
+  });
+});
+
+describe('IMPLEMENTED_METHOD_IDS', () => {
+  it('are all catalogued as implemented notification methods (contracts 0.4.0)', () => {
+    for (const id of IMPLEMENTED_METHOD_IDS) {
+      expect(CONTRACTS_METHOD_CATALOG.method(id), id).toMatchObject({
+        id,
+        domain: 'notification',
+        status: 'implemented',
+      });
+    }
   });
 });

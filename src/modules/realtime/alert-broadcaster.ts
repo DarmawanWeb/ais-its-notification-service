@@ -1,46 +1,25 @@
+import { subjects } from '@darmawanweb/ais-its-contracts/events';
 import {
   type RealtimeAlert,
-  RealtimeAlertSchema,
-  REALTIME_SERVER_EVENTS,
+  type RealtimeAlertFanout,
+  RealtimeAlertFanoutSchema,
 } from '@darmawanweb/ais-its-contracts/realtime';
-import type { CoreSubscriptionDefinition } from '@darmawanweb/ais-its-contracts/events';
 import {
   CoreSubscriptionHandler,
   type Msg,
   NatsClient,
 } from '@darmawanweb/ais-its-nest/nats';
 import { Injectable, Logger } from '@nestjs/common';
-import * as z from 'zod';
 
 import { type AlertEvent, RealtimeHub } from './realtime-hub.service.js';
 
 /**
- * Core NATS subject on which alert pushes are fanned out to every instance:
- * the durable `notification-alerts` consumer (and the REST ack/resolve)
- * changes an alert on one instance, but the clients are spread over all of
- * them. Internal to this service (no JetStream stream covers it).
- */
-export const REALTIME_FANOUT_SUBSCRIPTION: CoreSubscriptionDefinition = {
-  name: 'notification-realtime-fanout',
-  subject: 'aisits.notification.realtime.v1',
-  service: 'notification',
-  description:
-    'alert:raised / alert:updated pushes fanned out to every notification instance',
-};
-
-/** A fanned-out alert push (validated on both ends with the contracts schema). */
-const FanoutMessageSchema = z.object({
-  event: z.enum([
-    REALTIME_SERVER_EVENTS.ALERT_RAISED,
-    REALTIME_SERVER_EVENTS.ALERT_UPDATED,
-  ]),
-  rooms: z.array(z.string().min(1).max(128)).min(1).max(16),
-  alert: RealtimeAlertSchema,
-});
-
-/**
  * Pushes `alert:raised` / `alert:updated` (spec §9) to the `authority` room
- * and the owner organization rooms on every instance, through core NATS.
+ * and the owner organization rooms on every instance, through the contracts
+ * core subscription `notification-realtime-fanout`
+ * (`aisits.notification.realtime.v1`, `delivery: 'fanout'`): the durable
+ * `notification-alerts` consumer and the REST ack/resolve change an alert on
+ * one instance, while the socket clients are spread over all of them.
  */
 @Injectable()
 export class AlertBroadcaster {
@@ -55,16 +34,18 @@ export class AlertBroadcaster {
    * Publishes a push after the change was committed. Best effort: a push that
    * cannot be published is delivered to this instance's clients only (the
    * inbox stays the source of truth).
+   *
+   * @throws {ZodError} when the push does not fit `RealtimeAlertFanoutSchema` (a programming error)
    */
   publish(
     event: AlertEvent,
     alert: RealtimeAlert,
     rooms: readonly string[],
   ): void {
-    const message = FanoutMessageSchema.parse({ event, alert, rooms });
+    const message = RealtimeAlertFanoutSchema.parse({ event, alert, rooms });
     try {
       this.nats.connection.publish(
-        REALTIME_FANOUT_SUBSCRIPTION.subject,
+        subjects.notificationRealtime(),
         JSON.stringify(message),
       );
     } catch (error) {
@@ -76,19 +57,15 @@ export class AlertBroadcaster {
     }
   }
 
-  @CoreSubscriptionHandler({
-    subscription: REALTIME_FANOUT_SUBSCRIPTION,
-    queue: false,
-  })
-  onFanout(message: Msg): void {
-    const parsed = FanoutMessageSchema.safeParse(message.json<unknown>());
-    if (!parsed.success) {
-      this.logger.warn(
-        { issues: parsed.error.issues },
-        'Ignored an invalid alert push',
-      );
-      return;
-    }
-    this.hub.emitAlert(parsed.data.event, parsed.data.alert, parsed.data.rooms);
+  /**
+   * Every instance (this one included) emits the push to its own clients.
+   * The kit subscribes without a queue group (the contracts definition's
+   * `delivery: 'fanout'`) and validates the payload against
+   * `CORE_SUBSCRIPTION_PAYLOADS` (invalid messages are dropped and counted as
+   * `aisits_core_messages_total{outcome="invalid"}`).
+   */
+  @CoreSubscriptionHandler({ subscription: 'notification-realtime-fanout' })
+  onFanout(_message: Msg, payload: RealtimeAlertFanout): void {
+    this.hub.emitAlert(payload.event, payload.alert, payload.rooms);
   }
 }

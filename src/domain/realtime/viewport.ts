@@ -22,8 +22,6 @@ export interface ViewportPlan {
  * Rooms of the previous viewport that the new one does not cover are left;
  * rooms already joined are kept, so their batches are not interrupted.
  *
- * Proposed method id (not yet in docs/references/methods.json).
- *
  * @method notify.realtime_viewport_rooms
  * @see ../../../../../docs/PLATFORM_SPEC.md §9 — `viewport:set`
  * @see https://wiki.openstreetmap.org/wiki/Slippy_map_tilenames — tile numbering (Web Mercator)

@@ -1,12 +1,16 @@
-import { newId } from '@darmawanweb/ais-its-contracts/domain';
 import {
   type AisPositionRecordedV1,
   type AlertRaisedV1,
+  type AlertResolvedV1,
   EVENT_TYPES,
   type SafetyVesselStateV1,
 } from '@darmawanweb/ais-its-contracts/events';
-import { makeTestVesselSnapshot } from '@darmawanweb/ais-its-nest/analytics';
-import { waitFor } from '@darmawanweb/ais-its-nest/testing';
+import {
+  makeTestAlertRaised,
+  makeTestAlertResolved,
+  makeTestVesselSnapshot,
+  waitFor,
+} from '@darmawanweb/ais-its-nest/testing';
 
 import type { TestService } from './test-service.js';
 
@@ -50,29 +54,35 @@ export async function registerVessel(
   return snapshot.id;
 }
 
-/** An `alert.raised.v1` payload (EWS danger by default). */
+/** Pipeline zone of the test alerts. */
+const TEST_ZONE_ID = '0193a3c0-0000-7000-8000-0000000000e1';
+
+/**
+ * An `alert.raised.v1` payload of the kit (EWS warning by default) for
+ * `mmsi`, occurring now, validated with the contracts schema.
+ */
 export function alertRaised(
   mmsi: number,
   overrides: Partial<AlertRaisedV1> = {},
 ): AlertRaisedV1 {
-  return {
-    id: newId(),
-    type: 'ews',
-    domain: 'safety',
-    severity: 'warning',
+  return makeTestAlertRaised({
     mmsi,
-    relatedMmsi: null,
-    title: 'Anchored 1.2 km from the pipeline',
-    message: `Vessel ${mmsi} is predicted at anchor near the pipeline`,
-    lat: -6.95,
-    lon: 112.75,
     occurredAt: new Date().toISOString(),
-    dedupKey: `ews:${mmsi}:0193a3c0-0000-7000-8000-0000000000e1`,
-    zoneId: '0193a3c0-0000-7000-8000-0000000000e1',
-    methodId: 'ews.pipeline_distance_status',
-    data: { distanceM: 1_200 },
+    dedupKey: `ews:${mmsi}:${TEST_ZONE_ID}`,
+    zoneId: TEST_ZONE_ID,
     ...overrides,
-  };
+  });
+}
+
+/**
+ * The `alert.resolved.v1` of the occurrence `raise` (kit fixture): by default
+ * the condition ended ten minutes after the raise.
+ */
+export function alertResolved(
+  raise: AlertRaisedV1,
+  overrides: Partial<AlertResolvedV1> = {},
+): AlertResolvedV1 {
+  return makeTestAlertResolved(overrides, raise);
 }
 
 /** Publishes an alert as a detector does (envelope id = alert id). */
@@ -85,6 +95,16 @@ export async function raiseAlert(
   });
 }
 
+/** Publishes a resolution as a detector does (envelope id = resolution id). */
+export async function resolveAlert(
+  service: TestService,
+  resolution: AlertResolvedV1,
+): Promise<void> {
+  await service.publisher.publishEvent(EVENT_TYPES.ALERT_RESOLVED, resolution, {
+    id: resolution.id,
+  });
+}
+
 /** Waits for the inbox alert of a dedup key and returns its row. */
 export async function storedAlert(
   service: TestService,
@@ -93,7 +113,10 @@ export async function storedAlert(
 ): Promise<StoredAlertRow> {
   return waitFor(async () => {
     const { rows } = await service.pool.query<StoredAlertRow>(
-      `SELECT id, status, severity, occurrences, org_id AS "orgId", title
+      `SELECT id, status, severity, occurrences, org_id AS "orgId", title,
+              resolved_by AS "resolvedBy", resolved_at AS "resolvedAt",
+              resolution_reason AS "resolutionReason",
+              resolution_event_id AS "resolutionEventId"
          FROM alerts WHERE dedup_key = $1 ORDER BY occurred_at DESC LIMIT 1`,
       [dedupKey],
     );
@@ -110,6 +133,10 @@ export interface StoredAlertRow {
   readonly occurrences: number;
   readonly orgId: string | null;
   readonly title: string;
+  readonly resolvedBy: string | null;
+  readonly resolvedAt: Date | null;
+  readonly resolutionReason: string | null;
+  readonly resolutionEventId: string | null;
 }
 
 /** An `ais.position.recorded.v1` payload. */

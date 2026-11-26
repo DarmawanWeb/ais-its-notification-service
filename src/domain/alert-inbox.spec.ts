@@ -5,6 +5,8 @@ import {
   type AlertOccurrence,
   type MergeableAlert,
   mergeOccurrence,
+  type ResolvableAlert,
+  resolveByDetector,
   transitionAlert,
 } from './alert-inbox.js';
 
@@ -228,6 +230,75 @@ describe('transitionAlert (notify.alert_lifecycle)', () => {
     });
     expect(transitionAlert(resolved, 'acknowledge', actor, LATER)).toEqual({
       rejected: 'ALERT_ALREADY_RESOLVED',
+    });
+  });
+});
+
+describe('resolveByDetector (notify.alert_lifecycle)', () => {
+  const open: ResolvableAlert = {
+    status: 'open',
+    acknowledgedBy: null,
+    acknowledgedAt: null,
+    resolvedBy: null,
+    resolvedAt: null,
+    lastOccurredAt: LATER,
+  };
+
+  it('resolves an open alert at the end of the condition, by the system', () => {
+    const resolvedAt = new Date('2026-11-21T08:20:00Z');
+    expect(resolveByDetector(open, resolvedAt)).toEqual({
+      resolved: true,
+      lifecycle: {
+        status: 'resolved',
+        acknowledgedBy: null,
+        acknowledgedAt: null,
+        resolvedBy: null,
+        resolvedAt,
+      },
+    });
+  });
+
+  it('resolves an acknowledged alert and keeps its acknowledgement', () => {
+    const acknowledged: ResolvableAlert = {
+      ...open,
+      status: 'acknowledged',
+      acknowledgedBy: '0193a3c0-0000-7000-8000-0000000000aa',
+      acknowledgedAt: LATER,
+    };
+    const outcome = resolveByDetector(acknowledged, LATER);
+    expect(outcome).toMatchObject({
+      resolved: true,
+      lifecycle: {
+        status: 'resolved',
+        acknowledgedBy: acknowledged.acknowledgedBy,
+        acknowledgedAt: LATER,
+        resolvedBy: null,
+        resolvedAt: LATER,
+      },
+    });
+  });
+
+  it('resolves at the exact time of the latest occurrence', () => {
+    expect(resolveByDetector(open, LATER)).toMatchObject({ resolved: true });
+  });
+
+  it('keeps an alert open that merged an occurrence after resolvedAt', () => {
+    expect(resolveByDetector(open, FIRST)).toEqual({
+      resolved: false,
+      ignored: 'later_occurrence',
+    });
+  });
+
+  it('leaves a resolved alert alone', () => {
+    const resolved: ResolvableAlert = {
+      ...open,
+      status: 'resolved',
+      resolvedBy: '0193a3c0-0000-7000-8000-0000000000aa',
+      resolvedAt: LATER,
+    };
+    expect(resolveByDetector(resolved, new Date())).toEqual({
+      resolved: false,
+      ignored: 'already_resolved',
     });
   });
 });

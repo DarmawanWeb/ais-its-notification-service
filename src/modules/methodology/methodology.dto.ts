@@ -87,7 +87,7 @@ export class MethodSummaryDto {
   }
 }
 
-/** `GET /notification/methodology`. */
+/** `GET /notifications/methodology`. */
 export class MethodologyDto {
   @ApiProperty({ example: 'notification' })
   readonly service: string;

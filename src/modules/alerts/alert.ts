@@ -38,6 +38,12 @@ export interface InboxAlert {
   readonly resolvedAt: Date | null;
   readonly occurrences: number;
   readonly lastOccurredAt: Date;
+  /** `reason` of the `alert.resolved.v1` that resolved it (`null`: unresolved, or resolved by a user). */
+  readonly resolutionReason: string | null;
+  /** Envelope id of the `alert.resolved.v1` that resolved it. */
+  readonly resolutionEventId: string | null;
+  /** `data` of the `alert.resolved.v1` that resolved it (localizable text). */
+  readonly resolutionData: Record<string, unknown> | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }
@@ -121,6 +127,9 @@ export function newInboxAlert(
     resolvedAt: null,
     occurrences: 1,
     lastOccurredAt: occurredAt,
+    resolutionReason: null,
+    resolutionEventId: null,
+    resolutionData: null,
   };
 }
 

@@ -6,7 +6,7 @@ import { SERVICE } from '../src/service.js';
 import { startTestService, type TestService } from './support/test-service.js';
 
 /** Under /api/v2/notifications: the gateway routes that prefix to this service (spec §12). */
-const METHODOLOGY_URL = '/api/v2/notifications/methodology';
+const METHODOLOGY_URL = `/api/v2/${SERVICE.routePrefix}/methodology`;
 
 describe(`${SERVICE.packageName} platform behaviour`, () => {
   let service: TestService;

@@ -3,7 +3,7 @@ import {
   ALERT_SEVERITIES,
   KNOWN_ALERT_TYPES,
 } from '@darmawanweb/ais-its-contracts/domain';
-import { type Database, InjectDb } from '@darmawanweb/ais-its-nest/db';
+import { type Database, InjectDb, rowDate } from '@darmawanweb/ais-its-nest/db';
 import { Injectable } from '@nestjs/common';
 import {
   and,
@@ -34,13 +34,47 @@ import type {
   InboxAlert,
 } from './alert.js';
 
-const { alerts, openAlerts, vessels } = schema;
+const { alertOccurrences, alertReadMarks, alerts, openAlerts, vessels } =
+  schema;
 
 /** A new inbox alert (the database fills the timestamps). */
 export type NewInboxAlert = Omit<InboxAlert, 'createdAt' | 'updatedAt'>;
 
 /** Drizzle database of the service, or of one transaction. */
 export type Executor = Database<typeof schema>;
+
+/** A stored occurrence of an inbox alert (`alert_occurrences` row). */
+export type AlertOccurrenceRow = typeof alertOccurrences.$inferSelect;
+
+/** A new occurrence row (the database fills `received_at`). */
+export type NewAlertOccurrence = Omit<AlertOccurrenceRow, 'receivedAt'>;
+
+/** Position of an occurrence in the history order (cursor). */
+export interface OccurrenceCursor {
+  readonly occurredAt: string;
+  readonly eventId: string;
+}
+
+/** Bucket of `GET /alerts/stats/series` (PostgreSQL `date_trunc` field). */
+export type SeriesBucketField = 'hour' | 'day';
+
+/** Dimension of `GET /alerts/stats/series`. */
+export type SeriesGroupBy = 'severity' | 'type' | 'domain';
+
+/** One bucket and key of a series (`key` `null`: an empty bucket). */
+export interface SeriesCountRow {
+  readonly bucketFrom: Date;
+  readonly bucketTo: Date;
+  readonly key: string | null;
+  readonly count: number;
+}
+
+/** What a detector resolution stores with the alert. */
+export interface ResolutionDetails {
+  readonly reason: string | null;
+  readonly eventId: string;
+  readonly data: Readonly<Record<string, unknown>>;
+}
 
 /**
  * Drizzle access to the `alerts` hypertable. Reads take an {@link AlertScope}
@@ -49,6 +83,9 @@ export type Executor = Database<typeof schema>;
  */
 @Injectable()
 export class AlertsRepository {
+  /** `pg_timezone_names` by lower-case name, loaded once. */
+  private timeZones: Promise<ReadonlyMap<string, string>> | undefined;
+
   constructor(@InjectDb() private readonly db: Executor) {}
 
   /**
@@ -155,6 +192,93 @@ export class AlertsRepository {
     return row;
   }
 
+  /**
+   * Records an occurrence in the alert's history (idempotent: an occurrence
+   * stored before is left as it is).
+   */
+  async insertOccurrence(
+    executor: Executor,
+    occurrence: NewAlertOccurrence,
+  ): Promise<void> {
+    await executor
+      .insert(alertOccurrences)
+      .values({ ...occurrence, data: { ...occurrence.data } })
+      .onConflictDoNothing();
+  }
+
+  /**
+   * Whether the consumer has stored the raise with envelope id `eventId`:
+   * the first raise of `unresolved`, an id recorded in `processed_events`
+   * (kept `IDEMPOTENCY_RETENTION_DAYS`) or an occurrence in the history of
+   * `unresolved` (which outlives pruned ids). Run it under the dedup key's
+   * advisory lock: an ingest of the key holding it has not committed, so it
+   * does not count yet.
+   */
+  async raiseStored(
+    executor: Executor,
+    consumer: string,
+    eventId: string,
+    unresolved: Pick<InboxAlert, 'id' | 'occurredAt'> | undefined,
+  ): Promise<boolean> {
+    if (unresolved?.id === eventId) return true;
+    const inHistory =
+      unresolved === undefined
+        ? sql`false`
+        : sql`EXISTS (
+            SELECT 1 FROM ${alertOccurrences}
+            WHERE ${alertOccurrences.alertId} = ${unresolved.id}
+              AND ${alertOccurrences.alertOccurredAt} = ${unresolved.occurredAt}
+              AND ${alertOccurrences.eventId} = ${eventId})`;
+    const { rows } = await executor.execute<{ stored: boolean }>(sql`
+      SELECT EXISTS (
+               SELECT 1 FROM processed_events
+               WHERE consumer = ${consumer} AND event_id = ${eventId})
+             OR ${inHistory} AS stored`);
+    return rows[0]?.stored === true;
+  }
+
+  /**
+   * Resolves an alert for a detector (`alert.resolved.v1`) if its status is
+   * still the one that was read (a concurrent acknowledge or resolve over
+   * REST wins; occurrences of the key are serialized by the consumer's
+   * advisory lock) and removes its `open_alerts` entry, in the consumer's
+   * transaction.
+   *
+   * @returns the resolved alert, or `undefined` when its status changed meanwhile
+   */
+  async resolveForDetector(
+    executor: Executor,
+    stored: Pick<InboxAlert, 'id' | 'occurredAt' | 'mmsi' | 'status'>,
+    lifecycle: AlertLifecycle,
+    resolution: ResolutionDetails,
+  ): Promise<InboxAlert | undefined> {
+    const [row] = await executor
+      .update(alerts)
+      .set({
+        status: lifecycle.status,
+        acknowledgedBy: lifecycle.acknowledgedBy,
+        acknowledgedAt: lifecycle.acknowledgedAt,
+        resolvedBy: lifecycle.resolvedBy,
+        resolvedAt: lifecycle.resolvedAt,
+        resolutionReason: resolution.reason,
+        resolutionEventId: resolution.eventId,
+        resolutionData: { ...resolution.data },
+        updatedAt: sql`now()`,
+      })
+      .where(and(identifies(stored), eq(alerts.status, stored.status)))
+      .returning();
+    if (row === undefined) return undefined;
+    await executor
+      .delete(openAlerts)
+      .where(
+        and(
+          eq(openAlerts.dedupKey, row.dedupKey),
+          eq(openAlerts.alertId, row.id),
+        ),
+      );
+    return row;
+  }
+
   /** An alert visible in `scope`. */
   async findById(
     id: string,
@@ -166,6 +290,206 @@ export class AlertsRepository {
       .where(and(eq(alerts.id, id), this.scopeCondition(scope)))
       .limit(1);
     return row;
+  }
+
+  /** The history of an alert, newest occurrence first, `limit` rows after the cursor. */
+  async listOccurrences(
+    alert: Pick<InboxAlert, 'id' | 'occurredAt'>,
+    after: OccurrenceCursor | undefined,
+    limit: number,
+  ): Promise<AlertOccurrenceRow[]> {
+    return this.db
+      .select()
+      .from(alertOccurrences)
+      .where(
+        and(
+          eq(alertOccurrences.alertId, alert.id),
+          eq(alertOccurrences.alertOccurredAt, alert.occurredAt),
+          after === undefined
+            ? undefined
+            : sql`(${alertOccurrences.occurredAt}, ${alertOccurrences.eventId}) < (${new Date(after.occurredAt)}, ${after.eventId})`,
+        ),
+      )
+      .orderBy(
+        desc(alertOccurrences.occurredAt),
+        desc(alertOccurrences.eventId),
+      )
+      .limit(limit);
+  }
+
+  /** The read mark of a user in an organization (`null`: none). */
+  async findReadMark(
+    userId: string,
+    orgId: string | null,
+  ): Promise<Date | undefined> {
+    const [row] = await this.db
+      .select({ readUpTo: alertReadMarks.readUpTo })
+      .from(alertReadMarks)
+      .where(
+        and(
+          eq(alertReadMarks.userId, userId),
+          orgId === null
+            ? isNull(alertReadMarks.orgId)
+            : eq(alertReadMarks.orgId, orgId),
+        ),
+      )
+      .limit(1);
+    return row?.readUpTo;
+  }
+
+  /**
+   * Moves the read mark of a user in an organization forward to `upTo`
+   * (never backwards).
+   *
+   * @returns the stored mark
+   */
+  async advanceReadMark(
+    userId: string,
+    orgId: string | null,
+    upTo: Date,
+  ): Promise<Date> {
+    const [row] = await this.db
+      .insert(alertReadMarks)
+      .values({ userId, orgId, readUpTo: upTo })
+      .onConflictDoUpdate({
+        target: [alertReadMarks.userId, alertReadMarks.orgId],
+        set: {
+          readUpTo: sql`GREATEST(${alertReadMarks.readUpTo}, excluded.read_up_to)`,
+          updatedAt: sql`now()`,
+        },
+      })
+      .returning({ readUpTo: alertReadMarks.readUpTo });
+    if (row === undefined) throw new Error('Read mark upsert returned no row');
+    return row.readUpTo;
+  }
+
+  /**
+   * Open alerts visible in `scope` stored or changed after `readUpTo`
+   * (`updated_at`; every open alert without a mark).
+   */
+  async countUnread(
+    scope: AlertScope,
+    readUpTo: Date | undefined,
+  ): Promise<number> {
+    const [row] = await this.db
+      .select({ count: count() })
+      .from(alerts)
+      .where(
+        and(
+          eq(alerts.status, 'open'),
+          this.scopeCondition(scope),
+          readUpTo === undefined
+            ? undefined
+            : sql`${alerts.updatedAt} > ${readUpTo}`,
+        ),
+      );
+    return row?.count ?? 0;
+  }
+
+  /** Alerts matching the filter, counted up to `max` (a capped count for exports). */
+  async countUpTo(
+    filter: AlertFilter,
+    scope: AlertScope,
+    max: number,
+  ): Promise<number> {
+    const capped = this.db
+      .select({ id: alerts.id })
+      .from(alerts)
+      .where(and(this.scopeCondition(scope), ...filterConditions(filter)))
+      .limit(max)
+      .as('capped');
+    const [row] = await this.db.select({ count: count() }).from(capped);
+    return row?.count ?? 0;
+  }
+
+  /**
+   * The database's spelling of a time zone name (`pg_timezone_names`,
+   * case-insensitive like PostgreSQL), `undefined` for a name it does not
+   * know (ICU knows aliases the database's tzdata may lack). Read once; a
+   * failed read is retried.
+   */
+  async timeZoneName(name: string): Promise<string | undefined> {
+    this.timeZones ??= this.db
+      .execute<{ name: string }>(sql`SELECT name FROM pg_timezone_names`)
+      .then(
+        ({ rows }) =>
+          new Map(rows.map((row) => [row.name.toLowerCase(), row.name])),
+        (error: unknown) => {
+          this.timeZones = undefined;
+          throw error;
+        },
+      );
+    return (await this.timeZones).get(name.toLowerCase());
+  }
+
+  /**
+   * Alerts visible in `scope` per bucket of their first occurrence
+   * (`occurred_at`) and `groupBy` value: every local hour or day of
+   * `timeZone` from the bucket containing `filter.from` to the one
+   * containing `filter.to`, in order, empty ones included (`key` `null`).
+   * Bucket starts are the distinct local truncations
+   * (`date_trunc(bucket, t, timeZone)`, as the counts use) of an
+   * absolute-time grid finer than any local hour or day (zone offsets are
+   * multiples of 15 minutes), so a repeated hour at the end of daylight
+   * saving time is two buckets, a skipped one none, and a day is 23 to 25
+   * hours where the zone shifts its clock.
+   */
+  async series(
+    filter: AlertFilter & { readonly from: Date },
+    scope: AlertScope,
+    bucket: SeriesBucketField,
+    timeZone: string,
+    groupBy: SeriesGroupBy,
+  ): Promise<SeriesCountRow[]> {
+    const step = bucket === 'hour' ? '15 minutes' : '1 hour';
+    // Past `to`, so that the bucket containing it has a successor.
+    const pad = bucket === 'hour' ? '2 hours' : '2 days';
+    const key =
+      groupBy === 'severity'
+        ? alerts.severity
+        : groupBy === 'type'
+          ? alerts.type
+          : alerts.domain;
+    const conditions = and(
+      this.scopeCondition(scope),
+      ...filterConditions(filter),
+    );
+    const { rows } = await this.db.execute<{
+      bucket_from: Date | string;
+      bucket_to: Date | string;
+      key: string | null;
+      count: number | null;
+    }>(sql`
+      WITH starts AS (
+        SELECT DISTINCT date_trunc(${bucket}, grid, ${timeZone}) AS bucket_from
+        FROM generate_series(
+          ${filter.from}::timestamptz,
+          ${filter.to}::timestamptz + ${pad}::interval,
+          ${step}::interval
+        ) AS grid
+      ),
+      series AS (
+        SELECT bucket_from, lead(bucket_from) OVER (ORDER BY bucket_from) AS bucket_to
+        FROM starts
+      ),
+      counts AS (
+        SELECT date_trunc(${bucket}, ${alerts.occurredAt}, ${timeZone}) AS bucket_from,
+               ${key} AS key, count(*)::integer AS count
+        FROM ${alerts}
+        WHERE ${conditions ?? sql`true`}
+        GROUP BY 1, 2
+      )
+      SELECT s.bucket_from, s.bucket_to, c.key, c.count
+      FROM series s
+      LEFT JOIN counts c ON c.bucket_from = s.bucket_from
+      WHERE s.bucket_to IS NOT NULL AND s.bucket_from <= ${filter.to}::timestamptz
+      ORDER BY s.bucket_from, c.key`);
+    return rows.map((row) => ({
+      bucketFrom: rowDate(row.bucket_from),
+      bucketTo: rowDate(row.bucket_to),
+      key: row.key,
+      count: row.count ?? 0,
+    }));
   }
 
   /** Newest first (`occurred_at DESC, id DESC`), `limit` rows after the cursor. */

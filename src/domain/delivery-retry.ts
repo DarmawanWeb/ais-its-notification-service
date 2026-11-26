@@ -14,8 +14,6 @@ export interface RetryPolicy {
  * milliseconds, capped at `max` — e.g. 30 s, 1 min, 2 min, 4 min, … with the
  * defaults.
  *
- * Proposed method id (not yet in docs/references/methods.json).
- *
  * @method notify.delivery_retry_backoff
  * @see ../../../../docs/PLATFORM_SPEC.md §13.9 — deliveries "with retries"
  * @param attempt - number of the attempt that failed (≥ 1)

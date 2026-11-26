@@ -8,9 +8,37 @@ import {
   type AlertStatus,
 } from '@darmawanweb/ais-its-contracts/domain';
 import { CursorPageInfoDto } from '@darmawanweb/ais-its-nest/http';
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, type ApiPropertyOptions } from '@nestjs/swagger';
 
+import {
+  localizableTextOf,
+  MESSAGE_KEY_PATTERN,
+  type MessageParam,
+} from '../../../domain/alert-text.js';
 import type { AlertSummary, InboxAlert } from '../alert.js';
+
+/** OpenAPI of `messageKey` (alert texts). */
+export const MESSAGE_KEY_PROPERTY: ApiPropertyOptions = {
+  type: String,
+  nullable: true,
+  pattern: MESSAGE_KEY_PATTERN.source,
+  example: 'safety.ews.anchored_near_pipeline',
+  description:
+    'Stable key of the text (`<domain>.<detector>.<situation>`, from `data.messageKey`) for clients that ' +
+    'localize it; null when the detector sent none or an invalid one (render `title` / `message`)',
+};
+
+/** OpenAPI of `messageParams` (alert texts). */
+export const MESSAGE_PARAMS_PROPERTY: ApiPropertyOptions = {
+  type: 'object',
+  nullable: true,
+  additionalProperties: {
+    oneOf: [{ type: 'string' }, { type: 'number' }, { type: 'boolean' }],
+  },
+  example: { vessel: 'KM Bahari Satu (MMSI 525005223)', distanceM: 840 },
+  description:
+    'Values of the text (`data.messageParams`, flat strings, numbers and booleans); null together with `messageKey`',
+};
 
 /** An alert of the inbox on the wire. */
 export class AlertDto {
@@ -90,6 +118,12 @@ export class AlertDto {
   })
   readonly data: Record<string, unknown>;
 
+  @ApiProperty(MESSAGE_KEY_PROPERTY)
+  readonly messageKey: string | null;
+
+  @ApiProperty(MESSAGE_PARAMS_PROPERTY)
+  readonly messageParams: Record<string, MessageParam> | null;
+
   @ApiProperty({ example: 'safety', description: 'Producing service' })
   readonly source: string;
 
@@ -108,11 +142,57 @@ export class AlertDto {
   @ApiProperty({ type: String, format: 'date-time', nullable: true })
   readonly acknowledgedAt: string | null;
 
-  @ApiProperty({ type: String, format: 'uuid', nullable: true })
+  @ApiProperty({
+    type: String,
+    format: 'uuid',
+    nullable: true,
+    description:
+      'User who resolved the alert; null while unresolved and when its detector resolved it (`resolutionEventId` set)',
+  })
   readonly resolvedBy: string | null;
 
-  @ApiProperty({ type: String, format: 'date-time', nullable: true })
+  @ApiProperty({
+    type: String,
+    format: 'date-time',
+    nullable: true,
+    description:
+      'When it was resolved: the action of the user, or the end of the condition (`resolvedAt` of `alert.resolved.v1`)',
+  })
   readonly resolvedAt: string | null;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    maxLength: 500,
+    example: 'safe: not at anchor within the warning distance',
+    description:
+      'Why the detector ended the condition (English `reason` of `alert.resolved.v1`); null otherwise',
+  })
+  readonly resolutionReason: string | null;
+
+  @ApiProperty({
+    ...MESSAGE_KEY_PROPERTY,
+    example: 'safety.ews.resolved_safe',
+    description:
+      'Localizable key of `resolutionReason` (`messageKey` in the data of `alert.resolved.v1`); null otherwise',
+  })
+  readonly resolutionMessageKey: string | null;
+
+  @ApiProperty({
+    ...MESSAGE_PARAMS_PROPERTY,
+    example: {},
+    description: 'Values of `resolutionMessageKey`; null together with it',
+  })
+  readonly resolutionMessageParams: Record<string, MessageParam> | null;
+
+  @ApiProperty({
+    type: String,
+    format: 'uuid',
+    nullable: true,
+    description:
+      'Envelope id of the `alert.resolved.v1` that resolved the alert; null when a user resolved it or it is unresolved',
+  })
+  readonly resolutionEventId: string | null;
 
   @ApiProperty({ format: 'date-time' })
   readonly updatedAt: string;
@@ -134,6 +214,10 @@ export class AlertDto {
     this.methodId = alert.methodId;
     this.dedupKey = alert.dedupKey;
     this.data = alert.data;
+    const text = localizableTextOf(alert.data);
+    this.messageKey = text.messageKey;
+    this.messageParams =
+      text.messageParams === null ? null : { ...text.messageParams };
     this.source = alert.source;
     this.occurrences = alert.occurrences;
     this.occurredAt = alert.occurredAt.toISOString();
@@ -142,6 +226,14 @@ export class AlertDto {
     this.acknowledgedAt = alert.acknowledgedAt?.toISOString() ?? null;
     this.resolvedBy = alert.resolvedBy;
     this.resolvedAt = alert.resolvedAt?.toISOString() ?? null;
+    this.resolutionReason = alert.resolutionReason;
+    const resolutionText = localizableTextOf(alert.resolutionData);
+    this.resolutionMessageKey = resolutionText.messageKey;
+    this.resolutionMessageParams =
+      resolutionText.messageParams === null
+        ? null
+        : { ...resolutionText.messageParams };
+    this.resolutionEventId = alert.resolutionEventId;
     this.updatedAt = alert.updatedAt.toISOString();
   }
 }

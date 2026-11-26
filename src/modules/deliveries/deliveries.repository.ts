@@ -1,7 +1,8 @@
-import { type Database, InjectDb } from '@darmawanweb/ais-its-nest/db';
+import { type Database, InjectDb, rowDate } from '@darmawanweb/ais-its-nest/db';
 import { Injectable } from '@nestjs/common';
 import {
   and,
+  count,
   desc,
   eq,
   gte,
@@ -15,6 +16,7 @@ import {
 } from 'drizzle-orm';
 
 import * as schema from '../../db/schema.js';
+import type { DeliveryStatus } from '../../db/schema.js';
 import type { LastNotification } from '../../domain/alert-rules.js';
 import type { RuleTenancy } from '../rules/alert-rule.js';
 import type { Delivery, DeliveryCursor, DeliveryFilter } from './delivery.js';
@@ -252,6 +254,54 @@ export class DeliveriesRepository {
       .orderBy(desc(deliveries.createdAt), desc(deliveries.id))
       .limit(limit);
     return rows.map((row) => row.delivery);
+  }
+
+  /**
+   * Deliveries of the rules visible in `tenancy` planned within `[from, to]`
+   * (`created_at`), counted by status, and the latest `sent_at`.
+   */
+  async summary(
+    filter: {
+      readonly ruleId?: string | undefined;
+      readonly from: Date;
+      readonly to: Date;
+    },
+    tenancy: RuleTenancy,
+  ): Promise<{
+    readonly counts: ReadonlyMap<DeliveryStatus, number>;
+    readonly lastSentAt: Date | null;
+  }> {
+    const rows = await this.db
+      .select({
+        status: deliveries.status,
+        count: count(),
+        lastSentAt: sql<Date | string | null>`max(${deliveries.sentAt})`,
+      })
+      .from(deliveries)
+      .innerJoin(alertRules, eq(alertRules.id, deliveries.ruleId))
+      .where(
+        and(
+          tenancy.kind === 'all'
+            ? undefined
+            : eq(alertRules.orgId, tenancy.orgId),
+          filter.ruleId === undefined
+            ? undefined
+            : eq(deliveries.ruleId, filter.ruleId),
+          gte(deliveries.createdAt, filter.from),
+          lte(deliveries.createdAt, filter.to),
+        ),
+      )
+      .groupBy(deliveries.status);
+    let lastSentAt: Date | null = null;
+    for (const row of rows) {
+      if (row.lastSentAt === null) continue;
+      const sentAt = rowDate(row.lastSentAt);
+      if (lastSentAt === null || sentAt > lastSentAt) lastSentAt = sentAt;
+    }
+    return {
+      counts: new Map(rows.map((row) => [row.status, row.count])),
+      lastSentAt,
+    };
   }
 
   /** Deletes finished deliveries older than `before`. */
